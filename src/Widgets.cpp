@@ -298,11 +298,15 @@ bool BeginCard(const char* id, const ImVec2& size, bool border) {
     ImGui::PushStyleColor(ImGuiCol_Border, border ? P().border : ImVec4(0, 0, 0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 16));
-    bool open = ImGui::BeginChild(id, size, ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding |
-                                                (size.y == 0 ? ImGuiChildFlags_AutoResizeY : 0));
+    ImGui::BeginChild(id, size, ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding |
+                                    (size.y == 0 ? ImGuiChildFlags_AutoResizeY : 0));
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(2);
-    return open;
+    // ImGui requires EndChild() to be called even when BeginChild() returns false
+    // (e.g. the card is scrolled out of view). Always report the card as open so
+    // `if (BeginCard()) { ...; EndCard(); }` stays balanced; widgets drawn inside a
+    // clipped child are skipped cheaply by ImGui anyway.
+    return true;
 }
 
 void EndCard() {
