@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -30,8 +31,8 @@ public:
     // Opens the browser on RepairDesk's consent page, waits for the redirect
     // on the loopback redirect URI and exchanges the code for tokens.
     void startOAuthLogin();
-    // Exchanges a manually pasted authorization code.
-    void finishOAuthWithCode(const std::string& code);
+    // Exchanges a manually pasted authorization code (or full redirect URL).
+    void finishOAuthWithCode(const std::string& codeOrUrl);
     void refreshOAuthToken(bool force = false);
     void disconnectOAuth();
     bool oauthBusy = false;
@@ -44,6 +45,10 @@ public:
     bool inventoryLoadedOnce = false;
     std::string inventoryError;
     std::string inventoryStatus;       // e.g. "Loaded 312 items at 14:02"
+    // Refresh progress: items fetched so far (written from the worker thread) and the
+    // item count of the previous load, which the top progress bar uses as its 100% mark.
+    std::atomic<size_t> inventoryLoadProgress{0};
+    size_t inventoryPreviousTotal = 0;
     void refreshInventory(const std::string& keyword = "");
 
     // Finds an item by scanned code: SKU first, then UPC, then name.
@@ -80,12 +85,18 @@ private:
     void drawNavigation();
     void drawContent(float height);
     void drawBottomSearchBar();
+    void drawLoadProgressBar();        // thin accent bar along the top edge while inventory refreshes
     void drawToasts();
     void updateWindowChrome();
     void applyTokens(const OAuthTokens& tokens);
     void maintainOAuthToken();
     std::string oauthState_;
     double nextRefreshCheck_ = 0.0;
+
+    // Animated state of the top progress bar (fractions of the window width).
+    float progressSolid_ = 0.0f;
+    float progressDotted_ = 0.0f;
+    double progressHideAt_ = 0.0;      // keep the finished bar visible until this time
 
     HWND hwnd_;
     std::vector<Toast> toasts_;

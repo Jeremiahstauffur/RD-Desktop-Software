@@ -229,6 +229,16 @@ std::string RepairDeskApi::authorizeUrl(const std::string& baseUrl, const std::s
            "&redirect_uri=" + http::urlEncode(redirectUri) + "&state=" + http::urlEncode(state);
 }
 
+static std::string bodySnippet(const std::string& body) {
+    std::string s = body.substr(0, 240);
+    for (char& c : s) if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+    return body.size() > 240 ? s + "..." : s;
+}
+
+// RepairDesk's OAuth endpoints answer HTTP 200 even on failure and wrap the
+// RFC 6749 payload in {success, statusCode, message, data}; the tokens or the
+// error/error_description live inside "data". Plain (unwrapped) responses are
+// accepted too.
 static ApiResult<OAuthTokens> tokenRequest(const std::string& baseUrl, const std::string& form) {
     ApiResult<OAuthTokens> out;
     http::Response r = http::request("POST", trimSlash(baseUrl) + "/oauth2/token", form,
@@ -242,23 +252,53 @@ static ApiResult<OAuthTokens> tokenRequest(const std::string& baseUrl, const std
     try {
         j = json::parse(r.body);
     } catch (...) {
-        out.message = "Token endpoint returned a non-JSON response (HTTP " + std::to_string(r.status) + ")";
+        out.message = "Token endpoint returned a non-JSON response (HTTP " + std::to_string(r.status) + "): " + bodySnippet(r.body);
         return out;
     }
-    if (r.status >= 200 && r.status < 300 && j.is_object() && j.contains("access_token")) {
+    if (!j.is_object()) {
+        out.message = "Token endpoint returned an unexpected response (HTTP " + std::to_string(r.status) + "): " + bodySnippet(r.body);
+        return out;
+    }
+
+    const json& payload = j.contains("data") && j["data"].is_object() ? j["data"] : j;
+    bool success = r.status >= 200 && r.status < 300;
+    if (j.contains("success") && j["success"].is_boolean() && !j["success"].get<bool>()) success = false;
+    int innerStatus = (int)pickNumber(j, {"statusCode", "status_code", "status"});
+    if (innerStatus >= 400) {
+        success = false;
+        out.status = innerStatus;
+    }
+
+    std::string accessToken = pickString(payload, {"access_token", "accessToken"});
+    if (success && !accessToken.empty()) {
         out.ok = true;
-        out.value.accessToken = jsonToText(j["access_token"]);
-        if (j.contains("refresh_token")) out.value.refreshToken = jsonToText(j["refresh_token"]);
-        long long expiresIn = j.contains("expires_in") && j["expires_in"].is_number() ? j["expires_in"].get<long long>() : 3600;
+        out.value.accessToken = accessToken;
+        out.value.refreshToken = pickString(payload, {"refresh_token", "refreshToken"});
+        long long expiresIn = (long long)pickNumber(payload, {"expires_in", "expiresIn"});
+        if (expiresIn <= 0) expiresIn = 3600;
         out.value.expiresAt = (long long)std::time(nullptr) + expiresIn;
         out.message = "OK";
-    } else {
-        std::string err = j.is_object() && j.contains("error") ? jsonToText(j["error"]) : "";
-        std::string desc = j.is_object() && j.contains("error_description") ? jsonToText(j["error_description"]) : "";
-        if (desc.empty() && j.is_object() && j.contains("message")) desc = jsonToText(j["message"]);
-        out.message = desc.empty() ? (err.empty() ? "Token request failed (HTTP " + std::to_string(r.status) + ")" : err)
-                                   : (err.empty() ? desc : err + ": " + desc);
+        return out;
     }
+
+    std::string err = pickString(payload, {"error"});
+    if (err.empty()) err = pickString(j, {"error"});
+    std::string desc = pickString(payload, {"error_description", "message"});
+    if (desc.empty()) desc = pickString(j, {"error_description", "message"});
+    std::string hint = pickString(payload, {"hint"});
+    if (hint.empty()) hint = pickString(j, {"hint"});
+
+    if (success) {
+        // 2xx / success:true but no token anywhere in the response
+        out.message = "Token endpoint did not return an access token: " + bodySnippet(r.body);
+        return out;
+    }
+    if (err.empty() && desc.empty()) {
+        out.message = "Token request failed (HTTP " + std::to_string(out.status) + "): " + bodySnippet(r.body);
+        return out;
+    }
+    out.message = desc.empty() ? err : (err.empty() || err == desc ? desc : err + ": " + desc);
+    if (!hint.empty() && hint != desc) out.message += " (" + hint + ")";
     return out;
 }
 
@@ -362,7 +402,8 @@ ApiResult<json> RepairDeskApi::send(const std::string& method, const std::string
                                   "application/json", authHeaders()));
 }
 
-ApiResult<std::vector<InventoryItem>> RepairDeskApi::listInventory(const std::string& keyword, int maxItems, int pageSize) const {
+ApiResult<std::vector<InventoryItem>> RepairDeskApi::listInventory(const std::string& keyword, int maxItems, int pageSize,
+                                                                    const ProgressFn& progress) const {
     ApiResult<std::vector<InventoryItem>> out;
     out.ok = true;
     out.status = 200;
@@ -411,6 +452,7 @@ ApiResult<std::vector<InventoryItem>> RepairDeskApi::listInventory(const std::st
                 break;
             }
         }
+        if (progress) progress(out.value.size());
 
         if (maxItems > 0 && (int)out.value.size() >= maxItems) {
             break;

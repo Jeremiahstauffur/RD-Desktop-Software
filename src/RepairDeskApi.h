@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -78,7 +79,11 @@ public:
                                        const std::string& clientSecret, const std::string& token);
 
     // Inventory --------------------------------------------------------
-    ApiResult<std::vector<InventoryItem>> listInventory(const std::string& keyword = "", int maxItems = 0, int pageSize = 100) const;
+    // `progress` (optional) is invoked on the calling thread after every fetched page
+    // with the number of items collected so far.
+    using ProgressFn = std::function<void(size_t loaded)>;
+    ApiResult<std::vector<InventoryItem>> listInventory(const std::string& keyword = "", int maxItems = 0, int pageSize = 100,
+                                                        const ProgressFn& progress = nullptr) const;
     ApiResult<json> addInventoryItem(const json& fields) const;   // POST /inventory/addnewitem
     ApiResult<json> updateInventoryItem(long long id, const json& fields) const;
     ApiResult<json> deleteInventoryItem(long long id) const;

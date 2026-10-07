@@ -45,7 +45,10 @@ Settings (including tokens) are stored in `%APPDATA%\RD Desktop Software\setting
   header shows a checkbox list of every field RepairDesk returns), drag-to-reorder and drag-to-resize
   columns, sortable headers, multi-select checkboxes, bulk actions (delete, edit cost/price/quantity/
   category), click-to-edit cells, and a product page (click a row) with name, quantity, cost, price,
-  SKU, UPC and description at the top.
+  SKU, UPC and description at the top. While the inventory refreshes, a thin accent-coloured progress
+  bar runs along the top edge of the window: it reaches the right edge once as many items as the
+  previous load have arrived; any additional items extend it as a dotted segment on the right, in
+  proportion to the previous total.
 - **Stock take** – right-hand sidebar; scan or type a code and it is matched by SKU → UPC → name.
   Unknown codes play an error sound and show a red "No item found" line. Each scanned item shows the
   database quantity, the change (red/green) and the scanned count (accent colour). Nothing is written

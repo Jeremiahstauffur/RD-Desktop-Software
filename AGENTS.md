@@ -103,6 +103,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-07 | Inventory refresh progress bar: 3px accent bar along the top edge (`App::drawLoadProgressBar`), previous item count = 100%, extra items drawn as a dotted segment; `RepairDeskApi::listInventory` gained an optional per-page progress callback. | Done |
 | 2026-10-06 | Created `AGENTS.md` with project map, conventions, progress log, lessons and prompt wishes. | Done |
 | (earlier) | Core app: Win32/DX11 shell, ImGui UI, Inventory + DataTable, Stock take, POS, Tickets/Invoices/Customers, Communication, Global search, Settings (API key + OAuth2), theming. | Done (per README) |
 
@@ -132,6 +133,15 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   machines without MinGW. Don't remove these flags when touching link options.
 - **First CMake configure needs network.** FetchContent downloads ImGui and json; offline builds fail
   at configure time, not at compile time.
+- **Worker-thread progress goes through `std::atomic`.** `Async::run` continuations run on the UI
+  thread, but progress callbacks (e.g. `listInventory`'s per-page callback) run on the worker. Write
+  only to an atomic counter from there and read it in the draw function; never touch ImGui or
+  `App` vectors from the worker.
+- **A running `RD_Desktop_Software.exe` blocks linking** (`LNK1168: cannot open ... for writing`).
+  Close the app before building, or link into a scratch dir with
+  `-DFETCHCONTENT_SOURCE_DIR_IMGUI=<build>\_deps\imgui-src -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=<build>\_deps\nlohmann_json-src`
+  to reuse the downloaded deps offline. `cmake-build-debug` is configured for MSVC via CLion's bundled
+  CMake, so from a plain terminal run it inside `VsDevCmd.bat -arch=x64`.
 
 ## 6. Prompt wishes
 

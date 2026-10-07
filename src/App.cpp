@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <ctime>
 
 #include <dwmapi.h>
@@ -73,6 +74,35 @@ static bool isLoopbackUri(const std::string& uri) {
     return uri.find("://localhost") != std::string::npos || uri.find("://127.0.0.1") != std::string::npos;
 }
 
+// Accepts either a bare authorization code or the full redirect URL
+// ("http://localhost:8731/callback?code=...&state=...") pasted by the user.
+static std::string extractAuthCode(const std::string& raw) {
+    std::string input = trim(raw);
+    if (input.find("code=") == std::string::npos) return input;
+    size_t q = input.find('?');
+    std::string query = q == std::string::npos ? input : input.substr(q + 1);
+    size_t hash = query.find('#');
+    std::string fragment = hash == std::string::npos ? "" : query.substr(hash + 1);
+    if (hash != std::string::npos) query.erase(hash);
+    std::string code = http::queryParam(query, "code");
+    if (code.empty()) code = http::queryParam(fragment, "code");
+    return code.empty() ? input : code;
+}
+
+// Adds a troubleshooting hint for the most common token-exchange rejections.
+static std::string tokenExchangeHint(const std::string& message, const std::string& redirectUri) {
+    std::string lower = lowercase(message);
+    if (lower.find("redirect") != std::string::npos || lower.find("invalid_grant") != std::string::npos ||
+        lower.find("bad request") != std::string::npos || lower.find("invalid_request") != std::string::npos) {
+        return " Check that the redirect URI registered in RepairDesk is exactly \"" + redirectUri +
+               "\" and that the Client ID/Secret belong to that app, then sign in again (codes are single-use).";
+    }
+    if (lower.find("invalid_client") != std::string::npos) {
+        return " Check the Client ID and Client Secret.";
+    }
+    return "";
+}
+
 void App::applyTokens(const OAuthTokens& tokens) {
     settings.accessToken = tokens.accessToken;
     if (!tokens.refreshToken.empty()) settings.refreshToken = tokens.refreshToken;
@@ -138,7 +168,8 @@ void App::startOAuthLogin() {
                 oauthStatusOk = false;
                 notify(oauthStatus, ui::InfoKind::Error);
             } else if (!out.tokens.ok) {
-                oauthStatus = "Token exchange failed: " + out.tokens.message;
+                oauthStatus = "Token exchange failed: " + out.tokens.message +
+                              tokenExchangeHint(out.tokens.message, settings.redirectUri);
                 oauthStatusOk = false;
                 notify(oauthStatus, ui::InfoKind::Error);
             } else {
@@ -152,7 +183,8 @@ void App::startOAuthLogin() {
         });
 }
 
-void App::finishOAuthWithCode(const std::string& code) {
+void App::finishOAuthWithCode(const std::string& codeOrUrl) {
+    const std::string code = extractAuthCode(codeOrUrl);
     if (oauthBusy || code.empty()) return;
     oauthBusy = true;
     const std::string baseUrl = settings.baseUrl, clientId = settings.clientId, clientSecret = settings.clientSecret,
@@ -170,7 +202,7 @@ void App::finishOAuthWithCode(const std::string& code) {
                        inventoryError.clear();
                        refreshInventory();
                    } else {
-                       oauthStatus = "Token exchange failed: " + r.message;
+                       oauthStatus = "Token exchange failed: " + r.message + tokenExchangeHint(r.message, settings.redirectUri);
                        notify(oauthStatus, ui::InfoKind::Error);
                    }
                });
@@ -274,15 +306,25 @@ void App::refreshInventory(const std::string& keyword) {
     }
     inventoryLoading = true;
     inventoryError.clear();
+    inventoryPreviousTotal = inventory.size();
+    inventoryLoadProgress.store(0);
+    progressSolid_ = 0.0f;
+    progressDotted_ = 0.0f;
+    progressHideAt_ = 0.0;
     RepairDeskApi client = api();
     int maxItems = settings.inventoryPageSize;
+    std::atomic<size_t>* progress = &inventoryLoadProgress;
     Async::run(
-        [client, keyword, maxItems] { return client.listInventory(keyword, maxItems); },
+        [client, keyword, maxItems, progress] {
+            return client.listInventory(keyword, maxItems, 100, [progress](size_t loaded) { progress->store(loaded); });
+        },
         [this](ApiResult<std::vector<InventoryItem>> result) {
             inventoryLoading = false;
             inventoryLoadedOnce = true;
+            progressHideAt_ = ImGui::GetTime() + 0.8;
             if (result.ok) {
                 inventory = std::move(result.value);
+                inventoryLoadProgress.store(inventory.size());
                 inventoryStatus = "Loaded " + std::to_string(inventory.size()) + " items at " + timeNow();
             } else {
                 inventoryError = result.message;
@@ -383,7 +425,77 @@ void App::frame() {
     ImGui::EndGroup();
 
     ImGui::End();
+    drawLoadProgressBar();
     drawToasts();
+}
+
+// Thin accent bar along the top edge of the window while the inventory refreshes.
+// The previous item count is the 100% mark: the solid part travels left to right
+// and only reaches the right edge once at least as many items as before have
+// arrived. Items beyond the previous total are shown as a dotted segment on the
+// right, sized in proportion to the solid (previous total) segment.
+void App::drawLoadProgressBar() {
+    const double now = ImGui::GetTime();
+    const bool active = inventoryLoading || now < progressHideAt_;
+    if (!active && progressSolid_ <= 0.0f && progressDotted_ <= 0.0f) return;
+
+    const size_t loaded = inventoryLoadProgress.load();
+    const size_t previous = inventoryPreviousTotal;
+
+    // Target fractions of the full width.
+    float targetSolid = 0.0f, targetDotted = 0.0f;
+    bool indeterminate = false;
+    if (!active) {
+        targetSolid = targetDotted = 0.0f;         // fade out once the hold time has elapsed
+    } else if (previous == 0) {
+        indeterminate = inventoryLoading;          // first load: no reference total yet
+        targetSolid = inventoryLoading ? 0.0f : 1.0f;
+    } else if (loaded <= previous) {
+        targetSolid = (float)loaded / (float)previous;
+    } else {
+        targetSolid = (float)previous / (float)loaded;
+        targetDotted = 1.0f - targetSolid;
+    }
+
+    // Ease towards the target so page arrivals glide instead of jumping.
+    const float k = std::min(1.0f, ImGui::GetIO().DeltaTime * 10.0f);
+    progressSolid_ += (targetSolid - progressSolid_) * k;
+    progressDotted_ += (targetDotted - progressDotted_) * k;
+    if (!active && progressSolid_ < 0.002f && progressDotted_ < 0.002f) {
+        progressSolid_ = progressDotted_ = 0.0f;
+        return;
+    }
+
+    const Palette& P = Theme::get().palette();
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float thickness = 3.0f * dpiScale;
+    const float x0 = vp->WorkPos.x, y0 = vp->WorkPos.y, width = vp->WorkSize.x;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImU32 accent = Theme::u32(P.accent);
+    const ImU32 track = Theme::u32(Theme::withAlpha(P.accent, 0.18f));
+
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + width, y0 + thickness), track);
+
+    if (indeterminate) {
+        // Sliding segment until the first page tells us how many items there are.
+        const float segW = width * 0.25f;
+        const float t = (float)std::fmod(now * 0.6, 1.0);
+        const float sx = x0 - segW + (width + segW) * t;
+        const float a = std::max(x0, sx), b = std::min(x0 + width, sx + segW);
+        if (b > a) dl->AddRectFilled(ImVec2(a, y0), ImVec2(b, y0 + thickness), accent);
+        return;
+    }
+
+    const float solidEnd = x0 + width * progressSolid_;
+    if (progressSolid_ > 0.0f) dl->AddRectFilled(ImVec2(x0, y0), ImVec2(solidEnd, y0 + thickness), accent);
+
+    if (progressDotted_ > 0.0f) {
+        const float dash = 6.0f * dpiScale, gap = 4.0f * dpiScale;
+        const float end = std::min(x0 + width, solidEnd + width * progressDotted_);
+        for (float x = solidEnd + gap; x < end; x += dash + gap) {
+            dl->AddRectFilled(ImVec2(x, y0), ImVec2(std::min(x + dash, end), y0 + thickness), accent);
+        }
+    }
 }
 
 void App::openProduct(long long id) {

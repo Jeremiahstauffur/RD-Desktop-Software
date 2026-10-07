@@ -221,8 +221,9 @@ std::string waitForLoopbackRedirect(int port, int timeoutSeconds, std::string& e
         "<!doctype html><html><head><meta charset='utf-8'><title>RepairDesk Desktop</title>"
         "<style>body{font-family:'Segoe UI',sans-serif;background:#202020;color:#fff;display:flex;"
         "align-items:center;justify-content:center;height:100vh;margin:0}div{text-align:center}"
-        "h1{font-weight:600}p{opacity:.7}</style></head><body><div><h1>You're connected</h1>"
-        "<p>You can close this tab and return to RepairDesk Desktop.</p></div></body></html>";
+        "h1{font-weight:600}p{opacity:.7}</style></head><body><div><h1>Authorization received</h1>"
+        "<p>You can close this tab. RepairDesk Desktop is now exchanging the code for an access token - "
+        "check the Settings page for the result.</p></div></body></html>";
     std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " +
                            std::to_string(html.size()) + "\r\nConnection: close\r\n\r\n" + html;
     send(client, response.c_str(), (int)response.size(), 0);

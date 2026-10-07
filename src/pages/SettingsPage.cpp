@@ -161,7 +161,7 @@ void settings(App& app) {
         ImGui::BeginGroup();
         ui::Label("Or paste an authorization code");
         float goW = 90 * dpi;
-        ui::TextField("##authCode", s.authCode, "code from the redirect URL", -goW - ImGui::GetStyle().ItemSpacing.x);
+        ui::TextField("##authCode", s.authCode, "code (or the full redirect URL)", -goW - ImGui::GetStyle().ItemSpacing.x);
         ImGui::SameLine();
         ImGui::BeginDisabled(s.authCode.empty() || !app.settings.hasOAuthClient() || app.oauthBusy);
         if (ui::Button("Exchange", ImVec2(goW, 0))) {
