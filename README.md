@@ -35,9 +35,26 @@ the [RepairDesk Public API](https://api-docs.repairdesk.co/):
 3. Your browser opens RepairDesk's consent page. After you approve, RepairDesk redirects back to the
    loopback URI; the app captures the authorization code and exchanges it at `/oauth2/token`.
 4. If your registered redirect URI is not a localhost address, copy the `code` parameter from the
-   redirect URL and paste it into **Or paste an authorization code**.
+   redirect URL (or paste the whole redirect URL) into **Or paste an authorization code**.
 
 Settings (including tokens) are stored in `%APPDATA%\RD Desktop Software\settings.json`.
+
+### Troubleshooting OAuth
+
+The browser page that says *Authorization received* only confirms that the authorization code reached
+the app; the token exchange happens afterwards and its outcome is shown in the info bar under
+**Sign in with RepairDesk**.
+
+| Message in Settings | What it means / what to do |
+| --- | --- |
+| `Token exchange failed: invalid_client: ...` | Client ID or Client Secret is wrong, or belongs to a different OAuth app. |
+| `Token exchange failed: invalid_grant` / `invalid_request` / redirect-URI errors | The redirect URI registered in RepairDesk must match the one in Settings **character for character** (default `http://localhost:8731/callback`, no trailing slash). Codes are single-use and short-lived, so press **Sign in with RepairDesk** again after fixing the app registration. |
+| `Sign-in failed: Could not listen on 127.0.0.1:8731` | Another program uses the port. Change the port in the redirect URI (and in the RepairDesk app registration). |
+| `Sign-in failed: Timed out waiting for the browser` | The consent page was not approved within 5 minutes, or the browser could not reach `localhost`. Approve again, or use the paste-a-code field. |
+| Windows Firewall prompt | The app opens a loopback-only listener on port 8731 for the redirect; allowing it is safe. |
+
+RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the result in
+`{"success", "statusCode", "message", "data"}`; the app reads the real `error_description` from `data`.
 
 ## Features
 

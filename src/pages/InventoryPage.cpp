@@ -33,6 +33,7 @@ struct InventoryState {
     std::vector<bool> selectionVec;
     std::set<long long> selectedIds;
     size_t lastInventorySize = (size_t)-1;
+    unsigned lastInventoryRevision = 0;
     std::string lastSearch;
     bool columnsInitialised = false;
     bool viewDirty = true;
@@ -652,6 +653,10 @@ void inventory(App& app) {
         s.table.discoverColumns(recs);
         s.lastInventorySize = app.inventory.size();
         s.viewDirty = true;
+    }
+    if (s.lastInventoryRevision != app.inventoryRevision) {
+        s.lastInventoryRevision = app.inventoryRevision;
+        s.viewDirty = true;   // items were replaced in place (e.g. after a stock take)
     }
     if (s.search != s.lastSearch) {
         s.lastSearch = s.search;

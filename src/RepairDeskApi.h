@@ -26,6 +26,50 @@ std::string toLower(std::string s);
 // True when any value (or key) in the flattened record contains `needleLower`.
 bool recordMatches(const FlatRecord& record, const std::string& needleLower);
 
+struct NamedId {
+    long long id = 0;
+    std::string name;
+};
+
+struct DeviceInfo {
+    long long id = 0;
+    long long manufacturerId = 0;
+    std::string name;
+};
+
+// Reference data used to translate the names shown in the UI into the ids the
+// RepairDesk write endpoints require (manufacturer, device, supplier and
+// tax_class must be integers; condition / physical_location must match names).
+struct Lookups {
+    std::vector<NamedId> manufacturers;    // GET /devices -> company / manufacturer_id
+    std::vector<DeviceInfo> devices;       // GET /devices
+    std::vector<NamedId> suppliers;        // GET /purchaseorders -> supplier / vendorID
+    std::vector<NamedId> taxClasses;       // GET /taxclasses
+    std::vector<std::string> conditions;   // GET /inventory/additionalinfo
+    std::vector<std::string> locations;    // GET /inventory/additionalinfo
+    bool loaded = false;
+
+    const NamedId* findManufacturer(const std::string& nameOrId) const;
+    const DeviceInfo* findDevice(const std::string& nameOrId, long long manufacturerId = 0) const;
+    const NamedId* findSupplier(const std::string& nameOrId) const;
+    const NamedId* findTaxClass(const std::string& nameOrId) const;
+    std::string manufacturerName(long long id) const;
+    std::string deviceName(long long id) const;
+};
+
+// Inventory valuation methods offered by RepairDesk. The API takes
+// `valuation_method` as an integer; the codes follow the Swagger example (FIFO = 1).
+struct ValuationMethod {
+    int code;
+    const char* label;
+};
+inline constexpr ValuationMethod kValuationMethods[] = {
+    {1, "FIFO (First In, First Out)"},
+    {2, "LIFO (Last In, First Out)"},
+    {3, "WAC (Weighted Average Cost)"},
+};
+inline constexpr int kDefaultValuationMethod = 1;
+
 struct InventoryItem {
     long long id = 0;
     std::string name;
@@ -41,8 +85,16 @@ struct InventoryItem {
     FlatRecord fields;     // flattened record for the table
 
     static InventoryItem fromJson(const json& j);
+    // Complete PUT body for this item (RepairDesk wipes every field that is not
+    // sent). Lookup fields are emitted as names where the record has them and
+    // must be run through resolveLookupIds() before sending.
     json toUpdatePayload(const json& overrides = json::object()) const;
 };
+
+// Converts name based lookup fields (manufacturer, device, supplier, tax_class)
+// in `body` into ids and coerces numeric fields. Values that cannot be matched
+// are removed and reported in `notes` (when given).
+void resolveLookupIds(json& body, const Lookups& lookups, std::vector<std::string>* notes = nullptr);
 
 template <typename T>
 struct ApiResult {
@@ -84,9 +136,19 @@ public:
     using ProgressFn = std::function<void(size_t loaded)>;
     ApiResult<std::vector<InventoryItem>> listInventory(const std::string& keyword = "", int maxItems = 0, int pageSize = 100,
                                                         const ProgressFn& progress = nullptr) const;
+    // Re-reads one item (GET /inventory?keyword=<id>; the keyword filter matches ids).
+    ApiResult<InventoryItem> getInventoryItem(long long id) const;
     ApiResult<json> addInventoryItem(const json& fields) const;   // POST /inventory/addnewitem
     ApiResult<json> updateInventoryItem(long long id, const json& fields) const;
     ApiResult<json> deleteInventoryItem(long long id) const;
+
+    // Reference data -----------------------------------------------------
+    ApiResult<Lookups> loadLookups() const;
+    ApiResult<long long> createBrand(const std::string& name) const;                        // POST /createbrand
+    ApiResult<long long> createModel(long long manufacturerId, const std::string& name) const; // POST /createmodel
+    // Creates manufacturers / devices named in `body` that RepairDesk does not know
+    // yet and adds them to `lookups`. Returns true when something was created.
+    bool createMissingReferences(json& body, Lookups& lookups, std::vector<std::string>& notes) const;
 
     // Tickets / Invoices -----------------------------------------------
     ApiResult<std::vector<json>> listTickets(const std::string& keyword, int page, int pageSize) const;

@@ -129,31 +129,92 @@ InventoryItem InventoryItem::fromJson(const json& j) {
     return item;
 }
 
-json InventoryItem::toUpdatePayload(const json& overrides) const {
-    json body = raw.is_object() ? raw : json::object();
-    body["id"] = id;
-    if (!name.empty() || !body.contains("name")) body["name"] = name;
-    if (!sku.empty() || !body.contains("sku")) body["sku"] = sku;
-    if (!upc.empty() || !body.contains("upc_code")) body["upc_code"] = upc;
-    if (!category.empty() || !body.contains("item_type")) body["item_type"] = category;
-    if (!manufacturer.empty() || !body.contains("manufacturer")) body["manufacturer"] = manufacturer;
-    if (!device.empty() || !body.contains("device")) body["device"] = device;
-    if (price != 0.0 || !body.contains("price")) body["price"] = price;
-    if (costPrice != 0.0 || !body.contains("cost_price")) body["cost_price"] = costPrice;
-    body["in_stock"] = inStock;
+// True when the whole string is a (signed) integer literal.
+static bool isIntegerText(const std::string& s) {
+    if (s.empty()) return false;
+    size_t i = (s[0] == '-' || s[0] == '+') ? 1 : 0;
+    if (i >= s.size()) return false;
+    for (; i < s.size(); ++i) {
+        if (s[i] < '0' || s[i] > '9') return false;
+    }
+    return true;
+}
 
-    static const char* extraKeys[] = {
-        "supplier", "condition", "physical_location", "description", "notes",
-        "reorder_level", "stock_warning", "minimum_price", "tax_class",
-        "tax_inclusive", "valuation_method", "is_serialize"
-    };
-    for (const char* k : extraKeys) {
-        if (!body.contains(k) || body[k].is_null()) {
-            auto it = fields.find(k);
-            if (it != fields.end() && !it->second.empty()) {
-                body[k] = it->second;
+// Reduces a value from the list record to something PUT /inventory/{id} accepts:
+// scalars pass through, reference objects ({id, name, ...}) collapse to their id,
+// anything else (arrays, other objects, null) yields null.
+static json scalarOf(const json& v) {
+    if (v.is_number() || v.is_boolean()) return v;
+    if (v.is_string()) return v.get<std::string>().empty() ? json() : v;
+    if (v.is_object()) {
+        for (const char* k : {"id", "value"}) {
+            auto it = v.find(k);
+            if (it != v.end() && (it->is_number() || it->is_string())) return *it;
+        }
+    }
+    return json();
+}
+
+// Request body for PUT /inventory/{id}. Only the fields documented for the API's
+// Item schema are sent: echoing the complete list record (nested objects, computed
+// fields, customer group prices, ...) makes RepairDesk fail with HTTP 500.
+json InventoryItem::toUpdatePayload(const json& overrides) const {
+    const json rawObj = raw.is_object() ? raw : json::object();
+
+    // Looks up `key` (then `altKeys`) in the raw record, falling back to the flattened fields.
+    auto lookup = [&](const char* key, std::initializer_list<const char*> altKeys) -> json {
+        for (const char* k : altKeys) {
+            auto it = rawObj.find(k);
+            if (it != rawObj.end()) {
+                json v = scalarOf(*it);
+                if (!v.is_null()) return v;
             }
         }
+        auto it = rawObj.find(key);
+        if (it != rawObj.end()) {
+            json v = scalarOf(*it);
+            if (!v.is_null()) return v;
+        }
+        auto f = fields.find(key);
+        if (f != fields.end() && !f->second.empty()) return f->second;
+        return json();
+    };
+    auto asInteger = [](json v) -> json {
+        if (v.is_string() && isIntegerText(v.get_ref<const std::string&>())) return std::stoll(v.get<std::string>());
+        if (v.is_number_float()) return (long long)v.get<double>();
+        if (v.is_boolean()) return v.get<bool>() ? 1 : 0;
+        return v;
+    };
+
+    json body = json::object();
+    body["id"] = id;
+    body["name"] = name;
+    if (!sku.empty()) body["sku"] = sku;
+    if (!upc.empty()) body["upc_code"] = upc;
+    if (!category.empty()) body["item_type"] = category;
+    body["in_stock"] = inStock;
+    body["price"] = price;
+    body["cost_price"] = costPrice;
+
+    // References RepairDesk stores as ids; the list may return the id, the name or an object.
+    json v = asInteger(lookup("manufacturer", {"manufacturer_id"}));
+    if (v.is_null() && !manufacturer.empty()) v = manufacturer;
+    if (!v.is_null()) body["manufacturer"] = v;
+    v = lookup("device", {"device_id"});
+    if (v.is_null() && !device.empty()) v = device;
+    if (!v.is_null()) body["device"] = v;
+
+    static const char* integerKeys[] = {"supplier", "tax_class", "tax_inclusive", "valuation_method", "is_serialize"};
+    for (const char* k : integerKeys) {
+        const std::string idKey = std::string(k) + "_id";
+        v = asInteger(lookup(k, {idKey.c_str()}));
+        if (!v.is_null()) body[k] = v;
+    }
+    static const char* textKeys[] = {"reorder_level", "stock_warning", "minimum_price", "description", "notes",
+                                     "condition", "physical_location"};
+    for (const char* k : textKeys) {
+        v = lookup(k, {});
+        if (!v.is_null()) body[k] = v;
     }
 
     if (overrides.is_object()) {
@@ -469,6 +530,26 @@ ApiResult<std::vector<InventoryItem>> RepairDeskApi::listInventory(const std::st
         page++;
     }
 
+    return out;
+}
+
+ApiResult<InventoryItem> RepairDeskApi::getInventoryItem(long long id) const {
+    ApiResult<InventoryItem> out;
+    ApiResult<json> raw = get("/inventory", {{"keyword", std::to_string(id)}, {"page", "1"}, {"pagesize", "50"}});
+    out.status = raw.status;
+    out.message = raw.message;
+    if (!raw.ok) return out;
+
+    // The keyword also matches names/SKUs, so pick the record with the exact id.
+    for (const json& j : extractList(raw.value)) {
+        InventoryItem item = InventoryItem::fromJson(j);
+        if (item.id == id) {
+            out.ok = true;
+            out.value = std::move(item);
+            return out;
+        }
+    }
+    out.message = "Item " + std::to_string(id) + " was not returned by the server.";
     return out;
 }
 

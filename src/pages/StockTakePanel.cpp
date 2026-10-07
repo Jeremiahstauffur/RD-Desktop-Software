@@ -116,7 +116,8 @@ void applyToRepairDesk(App& app) {
         int ok = 0;
         int failed = 0;
         std::string firstError;
-        std::vector<std::pair<long long, int>> updatedQuantities;
+        std::vector<InventoryItem> refreshed;                     // items re-read from the server after the update
+        std::vector<std::pair<long long, int>> updatedQuantities; // fallback when the re-read failed
     };
     Async::run(
         [client, targets] {
@@ -126,7 +127,10 @@ void applyToRepairDesk(App& app) {
                 ApiResult<json> r = client.updateInventoryItem(t.item.id, payload);
                 if (r.ok) {
                     out.ok++;
-                    out.updatedQuantities.push_back({t.item.id, t.scanned});
+                    // Only the updated item is re-read; the rest of the list stays as it is.
+                    ApiResult<InventoryItem> fresh = client.getInventoryItem(t.item.id);
+                    if (fresh.ok) out.refreshed.push_back(std::move(fresh.value));
+                    else out.updatedQuantities.push_back({t.item.id, t.scanned});
                 } else {
                     out.failed++;
                     if (out.firstError.empty()) out.firstError = r.message;
@@ -137,15 +141,30 @@ void applyToRepairDesk(App& app) {
         [&app](Outcome out) {
             StockTakeState& st = S();
             st.applying = false;
+            // Updated items leave the panel so that a re-submit only retries the failed ones.
+            auto removeEntry = [&](long long id) {
+                for (size_t i = 0; i < st.entries.size(); ++i) {
+                    if (st.entries[i].id == id) {
+                        st.entries.erase(st.entries.begin() + i);
+                        break;
+                    }
+                }
+            };
+            for (const InventoryItem& fresh : out.refreshed) {
+                app.replaceInventoryItem(fresh);
+                removeEntry(fresh.id);
+            }
             for (const auto& [id, newQty] : out.updatedQuantities) {
                 for (InventoryItem& it : app.inventory) {
                     if (it.id == id) {
                         it.inStock = newQty;
                         it.fields["in_stock"] = std::to_string(newQty);
                         if (it.raw.is_object()) it.raw["in_stock"] = newQty;
+                        app.inventoryRevision++;
                         break;
                     }
                 }
+                removeEntry(id);
             }
             char buf[256];
             if (out.failed == 0) {
@@ -157,7 +176,6 @@ void applyToRepairDesk(App& app) {
                               out.firstError.c_str());
                 app.notify(buf, ui::InfoKind::Error);
             }
-            app.refreshInventory();
         });
 }
 

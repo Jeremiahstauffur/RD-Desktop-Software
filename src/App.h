@@ -50,6 +50,10 @@ public:
     std::atomic<size_t> inventoryLoadProgress{0};
     size_t inventoryPreviousTotal = 0;
     void refreshInventory(const std::string& keyword = "");
+    // Replaces (or appends) a single cached item without reloading the whole list.
+    void replaceInventoryItem(const InventoryItem& item);
+    // Incremented whenever cached items change in place; pages compare it to re-sort/filter.
+    unsigned inventoryRevision = 0;
 
     // Finds an item by scanned code: SKU first, then UPC, then name.
     // Returns -1 when nothing matches.

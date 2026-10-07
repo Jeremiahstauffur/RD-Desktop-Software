@@ -333,6 +333,19 @@ void App::refreshInventory(const std::string& keyword) {
         });
 }
 
+void App::replaceInventoryItem(const InventoryItem& item) {
+    bool found = false;
+    for (InventoryItem& it : inventory) {
+        if (it.id == item.id) {
+            it = item;
+            found = true;
+            break;
+        }
+    }
+    if (!found) inventory.push_back(item);
+    inventoryRevision++;
+}
+
 int App::findInventoryByCode(const std::string& rawCode) const {
     std::string code = lowercase(trim(rawCode));
     if (code.empty()) return -1;

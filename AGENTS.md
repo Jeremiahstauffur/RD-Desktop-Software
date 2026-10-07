@@ -103,6 +103,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-07 | OAuth token exchange: `tokenRequest` now unwraps RepairDesk's `{success, statusCode, message, data}` envelope (tokens and `error`/`error_description`/`hint` live in `data`, HTTP is always 200), `finishOAuthWithCode` accepts a full redirect URL, token-exchange failures get a redirect-URI/credentials hint, loopback landing page no longer claims "connected" before the exchange; README gained an OAuth troubleshooting section. | Done (awaiting user re-test with real credentials) |
 | 2026-10-07 | Inventory refresh progress bar: 3px accent bar along the top edge (`App::drawLoadProgressBar`), previous item count = 100%, extra items drawn as a dotted segment; `RepairDeskApi::listInventory` gained an optional per-page progress callback. | Done |
 | 2026-10-06 | Created `AGENTS.md` with project map, conventions, progress log, lessons and prompt wishes. | Done |
 | (earlier) | Core app: Win32/DX11 shell, ImGui UI, Inventory + DataTable, Stock take, POS, Tickets/Invoices/Customers, Communication, Global search, Settings (API key + OAuth2), theming. | Done (per README) |
@@ -112,8 +113,11 @@ Newest entries first. One line per task: date, what changed, status.
       `Settings` round-tripping (these don't need a window).
 - [ ] Document known RepairDesk API quirks (pagination parameters, rate limits, field names) in
       §5 as they are discovered.
-- [ ] Add a short "Troubleshooting" section to `README.md` (OAuth redirect issues, firewall prompts
-      for the loopback listener on port 8731).
+- [x] Add a short "Troubleshooting" section to `README.md` (OAuth redirect issues, firewall prompts
+      for the loopback listener on port 8731). (2026-10-07)
+- [ ] Loopback listener (`http::waitForLoopbackRedirect`) accepts a single IPv4 connection and has no
+      `recv` timeout; consider dual-stack (`::1`) listening, skipping favicon/preconnect requests and
+      parsing `code` from a POST body if RepairDesk ever switches to `response_mode=form_post`.
 
 ## 5. Lessons learned
 
@@ -137,6 +141,12 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   thread, but progress callbacks (e.g. `listInventory`'s per-page callback) run on the worker. Write
   only to an atomic counter from there and read it in the draw function; never touch ImGui or
   `App` vectors from the worker.
+- **RepairDesk OAuth endpoints always answer HTTP 200.** `/oauth2/authorize`, `/oauth2/token` and
+  `/oauth2/revoke` wrap the RFC 6749 payload as `{"success":bool,"statusCode":N,"message":"Bad Request",
+  "data":{"error":"invalid_grant","error_description":"..."}}`. Check `success`/`statusCode` and read
+  tokens/errors from `data`; the top-level `message` is just the generic HTTP reason phrase. The
+  Swagger spec (form-encoded body) and the help-center article (JSON body) disagree — the live server
+  accepts both. Verify endpoint behaviour with dummy credentials via `Invoke-WebRequest` before guessing.
 - **A running `RD_Desktop_Software.exe` blocks linking** (`LNK1168: cannot open ... for writing`).
   Close the app before building, or link into a scratch dir with
   `-DFETCHCONTENT_SOURCE_DIR_IMGUI=<build>\_deps\imgui-src -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=<build>\_deps\nlohmann_json-src`
@@ -161,6 +171,9 @@ was ambiguous, record here what information would have helped.
 ### Wishes gathered from past tasks
 - (2026-10-06) When asking for repository meta-files (like this one), say whether they should be
   prescriptive (rules) or descriptive (status), or both.
+- (2026-10-07) For OAuth/connection bugs, include the exact text of the info bar under **Sign in with
+  RepairDesk** and what the browser tab showed after consent; "not receiving a token" alone does not
+  distinguish a listener problem from a token-exchange rejection.
 
 ---
 
