@@ -104,6 +104,7 @@ Newest entries first. One line per task: date, what changed, status.
 | Date | Change | Status |
 | --- | --- | --- |
 | 2026-10-07 | OAuth token exchange: `tokenRequest` now unwraps RepairDesk's `{success, statusCode, message, data}` envelope (tokens and `error`/`error_description`/`hint` live in `data`, HTTP is always 200), `finishOAuthWithCode` accepts a full redirect URL, token-exchange failures get a redirect-URI/credentials hint, loopback landing page no longer claims "connected" before the exchange; README gained an OAuth troubleshooting section. | Done (awaiting user re-test with real credentials) |
+| 2026-10-07 | Stock take submit returned HTTP 500: `InventoryItem::toUpdatePayload` now sends only the fields of the API's `Item` schema (scalars; reference objects collapse to their id) instead of echoing the whole list record. After submit only the updated items are re-read (`RepairDeskApi::getInventoryItem`, keyword=id) and swapped into the cache via `App::replaceInventoryItem` (+ `inventoryRevision` so the table re-sorts); no full inventory reload. Updated rows leave the sidebar; failed ones stay for re-submit. | Done (awaiting user re-test against live API) |
 | 2026-10-07 | Inventory refresh progress bar: 3px accent bar along the top edge (`App::drawLoadProgressBar`), previous item count = 100%, extra items drawn as a dotted segment; `RepairDeskApi::listInventory` gained an optional per-page progress callback. | Done |
 | 2026-10-06 | Created `AGENTS.md` with project map, conventions, progress log, lessons and prompt wishes. | Done |
 | (earlier) | Core app: Win32/DX11 shell, ImGui UI, Inventory + DataTable, Stock take, POS, Tickets/Invoices/Customers, Communication, Global search, Settings (API key + OAuth2), theming. | Done (per README) |
@@ -113,6 +114,9 @@ Newest entries first. One line per task: date, what changed, status.
       `Settings` round-tripping (these don't need a window).
 - [ ] Document known RepairDesk API quirks (pagination parameters, rate limits, field names) in
       §5 as they are discovered.
+- [ ] Inventory bulk actions and inline edits (`InventoryPage.cpp`) still call `app.refreshInventory()`
+      after saving; switch them to the per-item `getInventoryItem` + `replaceInventoryItem` path used by
+      the stock take.
 - [x] Add a short "Troubleshooting" section to `README.md` (OAuth redirect issues, firewall prompts
       for the loopback listener on port 8731). (2026-10-07)
 - [ ] Loopback listener (`http::waitForLoopbackRedirect`) accepts a single IPv4 connection and has no
@@ -147,6 +151,15 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   tokens/errors from `data`; the top-level `message` is just the generic HTTP reason phrase. The
   Swagger spec (form-encoded body) and the help-center article (JSON body) disagree — the live server
   accepts both. Verify endpoint behaviour with dummy credentials via `Invoke-WebRequest` before guessing.
+- **`PUT /inventory/{id}` wants a flat `Item` body, not the list record.** Echoing a raw list item
+  (nested `manufacturer`/`tax_class`/`condition` objects, `customer_group_prices` arrays, computed
+  fields) back to the server produces an "internal server error" (HTTP 500). Build update bodies with
+  `InventoryItem::toUpdatePayload`, which whitelists the documented fields and collapses reference
+  objects to ids. The spec lives at <https://api-docs.repairdesk.co/rd-unresolved-swagger.json>
+  (components → schemas → `Item`) — fetch it instead of guessing field names.
+- **`GET /inventory?keyword=<id>` fetches a single item.** The keyword filter matches id, name and SKU,
+  so filter the result by exact id (`RepairDeskApi::getInventoryItem`). Use it to refresh individual
+  rows after an update rather than re-downloading the whole inventory.
 - **A running `RD_Desktop_Software.exe` blocks linking** (`LNK1168: cannot open ... for writing`).
   Close the app before building, or link into a scratch dir with
   `-DFETCHCONTENT_SOURCE_DIR_IMGUI=<build>\_deps\imgui-src -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=<build>\_deps\nlohmann_json-src`
@@ -174,6 +187,9 @@ was ambiguous, record here what information would have helped.
 - (2026-10-07) For OAuth/connection bugs, include the exact text of the info bar under **Sign in with
   RepairDesk** and what the browser tab showed after consent; "not receiving a token" alone does not
   distinguish a listener problem from a token-exchange rejection.
+- (2026-10-07) For "internal server error" reports, paste the full toast text (it includes the server's
+  `message`) and, if possible, the JSON of one affected item from the inventory list; the 500 could not
+  be reproduced without live credentials, so the fix was derived from the API schema.
 
 ---
 
