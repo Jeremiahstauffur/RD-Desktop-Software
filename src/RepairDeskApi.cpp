@@ -220,6 +220,19 @@ void resolveLookupIds(json& body, const Lookups& lookups, std::vector<std::strin
     resolve("tax_class", "Tax class", [&](const std::string& t) {
         const NamedId* c = lookups.findTaxClass(t); return c ? c->id : 0; });
 
+    // The API rejects (HTTP 400) locations that are not in GET /inventory/additionalinfo.
+    auto loc = body.find("physical_location");
+    if (loc != body.end() && loc->is_string() && !lookups.locations.empty()) {
+        const std::string want = toLower(loc->get<std::string>());
+        bool known = want.empty();
+        for (const std::string& l : lookups.locations) if (toLower(l) == want) { known = true; body["physical_location"] = l; break; }
+        if (!known) {
+            note("Physical location \"" + loc->get<std::string>() + "\" does not exist in RepairDesk and was left out "
+                 "(add it under Store settings first).");
+            body.erase("physical_location");
+        }
+    }
+
     for (const char* k : {"tax_inclusive", "valuation_method", "is_serialize", "in_stock"}) {
         auto it = body.find(k);
         if (it == body.end()) continue;
@@ -537,8 +550,12 @@ ApiResult<json> RepairDeskApi::toResult(const http::Response& r) {
     }
     out.ok = r.status >= 200 && r.status < 300;
     if (out.value.is_object()) {
+        // RepairDesk often wraps failures in an HTTP 200: {"success":false,"statusCode":500,...}
         if (out.value.contains("success") && out.value["success"].is_boolean() && !out.value["success"].get<bool>()) {
             out.ok = false;
+            if (out.value.contains("statusCode") && out.value["statusCode"].is_number()) {
+                out.status = out.value["statusCode"].get<int>();
+            }
         }
         if (out.value.contains("message") && out.value["message"].is_string()) {
             out.message = out.value["message"].get<std::string>();
@@ -680,10 +697,11 @@ json RepairDeskApi::prepareWriteBody(const json& fields, WriteNotes* notes) cons
 
 ApiResult<json> RepairDeskApi::addInventoryItem(const json& fields, WriteNotes* notes) const {
     json body = prepareWriteBody(fields, notes);
-    // POST /inventory/addnewitem answers HTTP 500 when no tax class is given.
+    // POST /inventory/addnewitem answers "Internal Server Error" (wrapped in an
+    // HTTP 200) whenever `tax_inclusive` is missing, so it is always sent.
+    if (!body.contains("tax_inclusive")) body["tax_inclusive"] = 0;
     if (!body.contains("tax_class") && lookups_ && !lookups_->taxClasses.empty()) {
         body["tax_class"] = lookups_->taxClasses.front().id;
-        if (!body.contains("tax_inclusive")) body["tax_inclusive"] = 0;
         if (notes) notes->messages.push_back("Tax class defaulted to \"" + lookups_->taxClasses.front().name + "\".");
     }
     return send("POST", "/inventory/addnewitem", body);

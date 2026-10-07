@@ -103,6 +103,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-07 | Stock take decreases ended at the negative change (14 → scanned 1 gave −13): a negative `in_stock` replaces the stock instead of adjusting it. `applyToRepairDesk` now loops (≤4 rounds): send delta → re-read via `getInventoryItem` → send `scanned − actual` until the server reports the scanned quantity; a non-converging item is reported as failed ("ended at X instead of Y") and stays in the sidebar with its `dbQty` refreshed. | Done (awaiting user re-test against live API) |
 | 2026-10-07 | Stock take submit sent the scanned count as `in_stock`, but RepairDesk applies `in_stock` in `PUT /inventory/{id}` as a *change* (adjustment), so stock was being added instead of set. `StockTakePanel.cpp` now sends `scanned − dbQty` (`TargetEntry::change`), skips items with change 0, and the Submit tooltip/README say "adjusts by the change". | Done (awaiting user re-test against live API) |
 | 2026-10-07 | OAuth token exchange: `tokenRequest` now unwraps RepairDesk's `{success, statusCode, message, data}` envelope (tokens and `error`/`error_description`/`hint` live in `data`, HTTP is always 200), `finishOAuthWithCode` accepts a full redirect URL, token-exchange failures get a redirect-URI/credentials hint, loopback landing page no longer claims "connected" before the exchange; README gained an OAuth troubleshooting section. | Done (awaiting user re-test with real credentials) |
 | 2026-10-07 | Stock take submit returned HTTP 500: `InventoryItem::toUpdatePayload` now sends only the fields of the API's `Item` schema (scalars; reference objects collapse to their id) instead of echoing the whole list record. After submit only the updated items are re-read (`RepairDeskApi::getInventoryItem`, keyword=id) and swapped into the cache via `App::replaceInventoryItem` (+ `inventoryRevision` so the table re-sorts); no full inventory reload. Updated rows leave the sidebar; failed ones stay for re-submit. | Done (awaiting user re-test against live API) |
@@ -161,10 +162,13 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   `InventoryItem::toUpdatePayload`, which whitelists the documented fields and collapses reference
   objects to ids. The spec lives at <https://api-docs.repairdesk.co/rd-unresolved-swagger.json>
   (components → schemas → `Item`) — fetch it instead of guessing field names.
-- **`in_stock` in `PUT /inventory/{id}` is a delta, not an absolute quantity.** RepairDesk adds the
-  value to the current stock (it does not accept an overwrite). Send `desired − current` and skip the
-  request when the change is 0 (see `applyToRepairDesk` in `StockTakePanel.cpp`). Re-read the item
-  afterwards to pick up the server's resulting quantity.
+- **`in_stock` in `PUT /inventory/{id}` is neither a value nor a clean delta.** A *positive* value is
+  added to the current stock (1 + 4 → 5); a *negative* value has been observed to replace the stock
+  (14 with −13 → −13). There is no dedicated stock-adjustment endpoint in the Swagger spec. The only
+  reliable way to reach an exact quantity is send → re-read (`getInventoryItem`) → send the remaining
+  difference, as `applyToRepairDesk` in `StockTakePanel.cpp` does (a decrease takes two PUTs: the
+  negative one lands at `−n`, the following positive one adds `scanned + n`). Skip the request when the
+  change is 0.
 - **`GET /inventory?keyword=<id>` fetches a single item.** The keyword filter matches id, name and SKU,
   so filter the result by exact id (`RepairDeskApi::getInventoryItem`). Use it to refresh individual
   rows after an update rather than re-downloading the whole inventory.
@@ -201,6 +205,8 @@ was ambiguous, record here what information would have helped.
 - (2026-10-07) When an API field behaves differently from its documentation (e.g. `in_stock` being an
   adjustment rather than a value), state the observed before/after numbers ("had 5, scanned 3, ended
   up with 8") so the semantics are unambiguous and other callers of the same field can be checked.
+- (2026-10-07) Report both directions of a quantity change (increase *and* decrease) when testing; the
+  `in_stock` fix for increases looked complete until a decrease showed asymmetric server behaviour.
 
 ---
 

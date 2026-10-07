@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -119,6 +120,7 @@ void applyToRepairDesk(App& app) {
         int failed = 0;
         std::string firstError;
         std::vector<InventoryItem> refreshed;                     // items re-read from the server after the update
+        std::vector<InventoryItem> refreshedFailed;               // re-read items that did not reach the scanned quantity
         std::vector<std::pair<long long, int>> updatedQuantities; // fallback when the re-read failed
     };
     Async::run(
@@ -131,19 +133,46 @@ void applyToRepairDesk(App& app) {
                     out.updatedQuantities.push_back({t.item.id, t.scanned});
                     continue;
                 }
-                // RepairDesk treats `in_stock` in PUT /inventory/{id} as a stock adjustment
-                // (added to the current quantity), not as the new absolute quantity.
-                json payload = t.item.toUpdatePayload({{"in_stock", t.change}});
-                ApiResult<json> r = client.updateInventoryItem(t.item.id, payload);
-                if (r.ok) {
-                    out.ok++;
+                // RepairDesk does not accept an absolute quantity in PUT /inventory/{id}:
+                // a positive `in_stock` is added to the current stock, while a negative one
+                // has been observed to replace it (14 with -13 ends at -13, not 1). So the
+                // adjustment is sent, the item re-read, and the remaining difference sent
+                // again until the server reports exactly the scanned quantity.
+                int delta = t.change;
+                bool failed = false;
+                bool converged = false;
+                std::optional<InventoryItem> latest;
+                for (int attempt = 0; attempt < 4 && delta != 0; ++attempt) {
+                    json payload = t.item.toUpdatePayload({{"in_stock", delta}});
+                    ApiResult<json> r = client.updateInventoryItem(t.item.id, payload);
+                    if (!r.ok) {
+                        failed = true;
+                        if (out.firstError.empty()) out.firstError = r.message;
+                        break;
+                    }
                     // Only the updated item is re-read; the rest of the list stays as it is.
                     ApiResult<InventoryItem> fresh = client.getInventoryItem(t.item.id);
-                    if (fresh.ok) out.refreshed.push_back(std::move(fresh.value));
-                    else out.updatedQuantities.push_back({t.item.id, t.scanned});
+                    if (!fresh.ok) break;   // cannot verify; assume the server applied the change
+                    latest = std::move(fresh.value);
+                    delta = t.scanned - latest->inStock;
+                    if (delta == 0) converged = true;
+                }
+                if (failed) {
+                    out.failed++;
+                    if (latest) out.refreshedFailed.push_back(std::move(*latest));
+                } else if (!latest) {
+                    out.ok++;
+                    out.updatedQuantities.push_back({t.item.id, t.scanned});
+                } else if (converged) {
+                    out.ok++;
+                    out.refreshed.push_back(std::move(*latest));
                 } else {
                     out.failed++;
-                    if (out.firstError.empty()) out.firstError = r.message;
+                    if (out.firstError.empty()) {
+                        out.firstError = "\"" + t.item.name + "\" ended at " + std::to_string(latest->inStock) +
+                                         " instead of " + std::to_string(t.scanned) + ".";
+                    }
+                    out.refreshedFailed.push_back(std::move(*latest));
                 }
             }
             return out;
@@ -163,6 +192,14 @@ void applyToRepairDesk(App& app) {
             for (const InventoryItem& fresh : out.refreshed) {
                 app.replaceInventoryItem(fresh);
                 removeEntry(fresh.id);
+            }
+            // Failed items stay in the panel; their database quantity reflects the server's state
+            // so that a re-submit computes the right change.
+            for (const InventoryItem& fresh : out.refreshedFailed) {
+                app.replaceInventoryItem(fresh);
+                for (ScanEntry& e : st.entries) {
+                    if (e.id == fresh.id) e.dbQty = fresh.inStock;
+                }
             }
             for (const auto& [id, newQty] : out.updatedQuantities) {
                 for (InventoryItem& it : app.inventory) {

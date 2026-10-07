@@ -66,12 +66,22 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
   bar runs along the top edge of the window: it reaches the right edge once as many items as the
   previous load have arrived; any additional items extend it as a dotted segment on the right, in
   proportion to the previous total.
+- **Product editor** – Category, Manufacturer, Device, Supplier, Condition and Physical location are
+  drop-downs filled with the values already used in your inventory (plus RepairDesk's device, supplier and
+  location lists); you can still type a new value. New manufacturers/devices are created in RepairDesk on
+  save; a physical location that RepairDesk does not know is left out with a warning (add it under Store
+  settings first). Valuation method (FIFO default, LIFO, WAC) and Tax class are fixed drop-downs loaded
+  from your account. Next to the Price box a pill shows a suggested price
+  (`round(cost × 2 to the nearest 0.20) − 0.05`, shown in USD) – click it to copy the amount into Price;
+  the small pencil beside it lets you change the multiplier, rounding step and subtraction (saved in
+  settings).
 - **Stock take** – right-hand sidebar; scan or type a code and it is matched by SKU → UPC → name.
   Unknown codes play an error sound and show a red "No item found" line. Each scanned item shows the
   database quantity, the change (red/green) and the scanned count (accent colour). Nothing is written
   to RepairDesk until **Submit** is pressed. Submit sends the *change* (scanned − database quantity)
-  as a stock adjustment, which is how the RepairDesk API expects quantity updates, so each item ends
-  up at the scanned count; items whose change is 0 are not sent. After submitting, only the updated
+  as a stock adjustment, re-reads the item and, if RepairDesk reports a different quantity (it handles
+  decreases differently from increases), sends the remaining difference again until the item is at
+  exactly the scanned count; items whose change is 0 are not sent. After submitting, only the updated
   items are re-read from RepairDesk and refreshed in the inventory list (the rest of the list is left
   untouched); items that failed to update stay in the sidebar so they can be re-submitted.
 - **POS** – product grid with barcode entry, cart and invoice creation.
