@@ -78,7 +78,8 @@ void handleScan(App& app) {
 
 struct TargetEntry {
     InventoryItem item;
-    int scanned = 0;
+    int scanned = 0;   // counted quantity (what the stock should end up as)
+    int change = 0;    // scanned - quantity stored in RepairDesk; this is what the API wants
 };
 
 void applyToRepairDesk(App& app) {
@@ -107,6 +108,7 @@ void applyToRepairDesk(App& app) {
             t.item.upc = e.upc;
             t.item.inStock = e.dbQty;
         }
+        t.change = t.scanned - t.item.inStock;
         targets.push_back(std::move(t));
     }
 
@@ -123,7 +125,15 @@ void applyToRepairDesk(App& app) {
         [client, targets] {
             Outcome out;
             for (const TargetEntry& t : targets) {
-                json payload = t.item.toUpdatePayload({{"in_stock", t.scanned}});
+                if (t.change == 0) {
+                    // Already at the counted quantity; nothing to send.
+                    out.ok++;
+                    out.updatedQuantities.push_back({t.item.id, t.scanned});
+                    continue;
+                }
+                // RepairDesk treats `in_stock` in PUT /inventory/{id} as a stock adjustment
+                // (added to the current quantity), not as the new absolute quantity.
+                json payload = t.item.toUpdatePayload({{"in_stock", t.change}});
                 ApiResult<json> r = client.updateInventoryItem(t.item.id, payload);
                 if (r.ok) {
                     out.ok++;
@@ -335,7 +345,7 @@ void stockTake(App& app) {
     if (ui::AccentButton(applyLabel.c_str())) applyToRepairDesk(app);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !s.entries.empty()) {
-        ui::Tooltip("Submits the stock take: sets each item's in-stock quantity in RepairDesk to the scanned quantity");
+        ui::Tooltip("Submits the stock take: adjusts each item's in-stock quantity in RepairDesk by the change shown, so it ends up at the scanned quantity");
     }
 
     ImGui::EndChild();

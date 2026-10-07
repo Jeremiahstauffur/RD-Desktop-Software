@@ -69,9 +69,11 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
 - **Stock take** – right-hand sidebar; scan or type a code and it is matched by SKU → UPC → name.
   Unknown codes play an error sound and show a red "No item found" line. Each scanned item shows the
   database quantity, the change (red/green) and the scanned count (accent colour). Nothing is written
-  to RepairDesk until **Submit** is pressed. After submitting, only the updated items are re-read from
-  RepairDesk and refreshed in the inventory list (the rest of the list is left untouched); items that
-  failed to update stay in the sidebar so they can be re-submitted.
+  to RepairDesk until **Submit** is pressed. Submit sends the *change* (scanned − database quantity)
+  as a stock adjustment, which is how the RepairDesk API expects quantity updates, so each item ends
+  up at the scanned count; items whose change is 0 are not sent. After submitting, only the updated
+  items are re-read from RepairDesk and refreshed in the inventory list (the rest of the list is left
+  untouched); items that failed to update stay in the sidebar so they can be re-submitted.
 - **POS** – product grid with barcode entry, cart and invoice creation.
 - **Tickets / Invoices / Customers** – paged, searchable lists; click a row to view every field.
 - **Communication** – SMS inbox and send-SMS (via ticket) form.

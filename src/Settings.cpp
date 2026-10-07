@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -35,6 +36,15 @@ std::string Settings::layoutPath() {
     return (std::filesystem::path(dataDirectory()) / "layout.ini").string();
 }
 
+double Settings::suggestedPrice(double cost) const {
+    double v = cost * priceMultiplier;
+    if (priceRoundTo > 0.0) v = std::round(v / priceRoundTo) * priceRoundTo;
+    v -= priceSubtract;
+    // Snap to cents to hide binary floating point noise (e.g. 9.9500000001).
+    v = std::round(v * 100.0) / 100.0;
+    return v < 0.0 ? 0.0 : v;
+}
+
 void Settings::load() {
     std::ifstream in(settingsPath());
     if (!in) return;
@@ -51,6 +61,9 @@ void Settings::load() {
         darkTheme = j.value("darkTheme", darkTheme);
         inventoryPageSize = j.value("inventoryPageSize", inventoryPageSize);
         if (inventoryPageSize == 1000) inventoryPageSize = 0; // migrate legacy 1000 default to unlimited
+        priceMultiplier = j.value("priceMultiplier", priceMultiplier);
+        priceRoundTo = j.value("priceRoundTo", priceRoundTo);
+        priceSubtract = j.value("priceSubtract", priceSubtract);
         if (j.contains("accent") && j["accent"].is_array() && j["accent"].size() == 3) {
             for (int i = 0; i < 3; ++i) accent[i] = j["accent"][i].get<float>();
         }
@@ -71,6 +84,9 @@ void Settings::save() const {
     j["baseUrl"] = baseUrl;
     j["darkTheme"] = darkTheme;
     j["inventoryPageSize"] = inventoryPageSize;
+    j["priceMultiplier"] = priceMultiplier;
+    j["priceRoundTo"] = priceRoundTo;
+    j["priceSubtract"] = priceSubtract;
     j["accent"] = {accent[0], accent[1], accent[2]};
     std::ofstream out(settingsPath());
     out << j.dump(2);

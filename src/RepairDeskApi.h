@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -49,16 +50,19 @@ struct Lookups {
     std::vector<std::string> locations;    // GET /inventory/additionalinfo
     bool loaded = false;
 
+    // Case-insensitive name match; a purely numeric string matches by id.
     const NamedId* findManufacturer(const std::string& nameOrId) const;
     const DeviceInfo* findDevice(const std::string& nameOrId, long long manufacturerId = 0) const;
     const NamedId* findSupplier(const std::string& nameOrId) const;
     const NamedId* findTaxClass(const std::string& nameOrId) const;
     std::string manufacturerName(long long id) const;
     std::string deviceName(long long id) const;
+    std::string taxClassName(long long id) const;
 };
 
 // Inventory valuation methods offered by RepairDesk. The API takes
 // `valuation_method` as an integer; the codes follow the Swagger example (FIFO = 1).
+// Note: the public API currently accepts but does not persist this field.
 struct ValuationMethod {
     int code;
     const char* label;
@@ -69,6 +73,13 @@ inline constexpr ValuationMethod kValuationMethods[] = {
     {3, "WAC (Weighted Average Cost)"},
 };
 inline constexpr int kDefaultValuationMethod = 1;
+
+// Feedback from an inventory write about how the payload was adjusted.
+struct WriteNotes {
+    std::vector<std::string> messages;   // dropped fields, created references
+    bool createdReferences = false;      // a manufacturer/device was created via the API
+    bool createMissing = false;          // input: create unknown manufacturers/devices
+};
 
 struct InventoryItem {
     long long id = 0;
@@ -93,7 +104,8 @@ struct InventoryItem {
 
 // Converts name based lookup fields (manufacturer, device, supplier, tax_class)
 // in `body` into ids and coerces numeric fields. Values that cannot be matched
-// are removed and reported in `notes` (when given).
+// are removed (the API rejects the whole request otherwise) and reported in
+// `notes` when given.
 void resolveLookupIds(json& body, const Lookups& lookups, std::vector<std::string>* notes = nullptr);
 
 template <typename T>
@@ -119,6 +131,9 @@ public:
 
     bool hasKey() const { return !apiKey_.empty() || !accessToken_.empty(); }
 
+    // Reference data used by the inventory write methods to turn names into ids.
+    void setLookups(std::shared_ptr<const Lookups> lookups) { lookups_ = std::move(lookups); }
+
     // OAuth2 ------------------------------------------------------------
     static std::string authorizeUrl(const std::string& baseUrl, const std::string& clientId,
                                     const std::string& redirectUri, const std::string& state);
@@ -138,13 +153,15 @@ public:
                                                         const ProgressFn& progress = nullptr) const;
     // Re-reads one item (GET /inventory?keyword=<id>; the keyword filter matches ids).
     ApiResult<InventoryItem> getInventoryItem(long long id) const;
-    ApiResult<json> addInventoryItem(const json& fields) const;   // POST /inventory/addnewitem
-    ApiResult<json> updateInventoryItem(long long id, const json& fields) const;
+    // Both write methods run the body through resolveLookupIds() (and, when
+    // notes->createMissing is set, createMissingReferences()) before sending.
+    ApiResult<json> addInventoryItem(const json& fields, WriteNotes* notes = nullptr) const;   // POST /inventory/addnewitem
+    ApiResult<json> updateInventoryItem(long long id, const json& fields, WriteNotes* notes = nullptr) const;
     ApiResult<json> deleteInventoryItem(long long id) const;
 
     // Reference data -----------------------------------------------------
     ApiResult<Lookups> loadLookups() const;
-    ApiResult<long long> createBrand(const std::string& name) const;                        // POST /createbrand
+    ApiResult<long long> createBrand(const std::string& name) const;                          // POST /createbrand
     ApiResult<long long> createModel(long long manufacturerId, const std::string& name) const; // POST /createmodel
     // Creates manufacturers / devices named in `body` that RepairDesk does not know
     // yet and adds them to `lookups`. Returns true when something was created.
@@ -173,9 +190,12 @@ private:
 
     std::string authHeaders() const;
 
+    json prepareWriteBody(const json& fields, WriteNotes* notes) const;
+
     std::string baseUrl_;
     std::string apiKey_;
     std::string accessToken_;
+    std::shared_ptr<const Lookups> lookups_;
 };
 
 // Finds the most plausible list payload in a RepairDesk response

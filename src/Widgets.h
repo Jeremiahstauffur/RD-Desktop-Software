@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <imgui.h>
 
@@ -22,6 +23,8 @@ bool Button(const char* label, const ImVec2& size = ImVec2(0, 0));
 bool DangerButton(const char* label, const ImVec2& size = ImVec2(0, 0));
 bool IconButton(const char* id, const char* icon, const char* tooltip = nullptr, bool accent = false);
 bool SubtleButton(const char* label, const ImVec2& size = ImVec2(0, 0));
+// Small rounded accent-tinted chip (e.g. a suggested value). Height = frame height.
+bool PillButton(const char* id, const char* label, const char* tooltip = nullptr);
 
 // Form controls ----------------------------------------------------------
 bool ToggleSwitch(const char* label, bool* value);
@@ -32,6 +35,13 @@ bool TextField(const char* id, std::string& value, const char* hint = nullptr, f
 bool SearchField(const char* id, std::string& value, const char* hint, float width);
 bool NumberField(const char* id, double& value, const char* format = "%.2f", float width = 0.0f);
 bool IntField(const char* id, int& value, float width = 0.0f);
+// Text field with a drop-down of suggestions filtered by the typed text. Any text is
+// accepted (the user may enter a value that is not in `options`). Returns true when changed.
+bool SuggestField(const char* id, std::string& value, const std::vector<std::string>& options,
+                  const char* hint = nullptr, float width = 0.0f);
+// Fixed-choice drop-down over `options`; `index` is the selected entry (-1 = none).
+bool ComboField(const char* id, int& index, const std::vector<std::string>& options,
+                const char* placeholder = "Select...", float width = 0.0f);
 void Label(const char* text);                         // label placed above a form control
 
 // Layout -----------------------------------------------------------------

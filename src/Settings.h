@@ -23,6 +23,13 @@ struct Settings {
     float accent[3] = {0.0f, 0.47f, 0.83f};   // Windows 11 default blue (#0078D4)
     int inventoryPageSize = 0;                 // 0 = load all items (unlimited)
 
+    // Suggested-price formula shown next to the price box on the product page:
+    //   round(cost * multiplier to the nearest roundTo) - subtract
+    double priceMultiplier = 2.0;
+    double priceRoundTo = 0.20;
+    double priceSubtract = 0.05;
+    double suggestedPrice(double cost) const;
+
     // Directory used for settings.json and imgui layout persistence.
     static std::string dataDirectory();
     static std::string settingsPath();

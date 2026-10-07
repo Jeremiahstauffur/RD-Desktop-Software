@@ -54,9 +54,23 @@ struct InventoryState {
         std::string description, notes, reorderLevel, stockWarning, minimumPrice;
         int qty = 0;
         double cost = 0.0, price = 0.0;
+        int valuationIndex = 0;            // index into kValuationMethods (FIFO by default)
+        int taxClassIndex = -1;            // index into app.lookups->taxClasses (-1 = not set)
         bool dirty = false;
     } editor;
     bool productSaving = false;
+
+    // Suggestion lists for the editor drop-downs, rebuilt when the inventory or lookups change.
+    struct Suggestions {
+        std::vector<std::string> categories, manufacturers, devices, suppliers, locations, conditions, taxClasses;
+        size_t inventorySize = (size_t)-1;
+        unsigned inventoryRevision = 0;
+        const void* lookups = nullptr;
+    } suggest;
+
+    // Suggested-price formula editor (pencil next to the price pill).
+    bool openFormulaPopup = false;
+    double formulaMultiplier = 2.0, formulaRoundTo = 0.2, formulaSubtract = 0.05;
 };
 
 // Fields that may be edited inline in the table / product page and sent to PUT /inventory/{id}.
@@ -294,7 +308,77 @@ const InventoryItem* findItem(const App& app, long long id) {
     return nullptr;
 }
 
-void loadEditor(InventoryState& s, const InventoryItem& it) {
+// Case-insensitive sorted unique list of the non-empty values of `key` across the inventory.
+void collectValues(const App& app, const char* key, std::vector<std::string>& out) {
+    std::set<std::string> seenLower;
+    for (const std::string& v : out) seenLower.insert(lower(v));
+    for (const InventoryItem& it : app.inventory) {
+        auto f = it.fields.find(key);
+        if (f == it.fields.end() || f->second.empty() || looksNumeric(f->second)) continue;
+        if (seenLower.insert(lower(f->second)).second) out.push_back(f->second);
+    }
+    std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) { return lower(a) < lower(b); });
+}
+
+void rebuildSuggestions(App& app, InventoryState& s) {
+    InventoryState::Suggestions& g = s.suggest;
+    const Lookups& L = *app.lookups;
+    if (g.inventorySize == app.inventory.size() && g.inventoryRevision == app.inventoryRevision && g.lookups == &L) return;
+    g.inventorySize = app.inventory.size();
+    g.inventoryRevision = app.inventoryRevision;
+    g.lookups = &L;
+
+    g.categories.clear();
+    g.manufacturers.clear();
+    g.devices.clear();
+    g.suppliers.clear();
+    g.locations.clear();
+    g.conditions.clear();
+    g.taxClasses.clear();
+    for (const NamedId& m : L.manufacturers) g.manufacturers.push_back(m.name);
+    for (const DeviceInfo& d : L.devices) g.devices.push_back(d.name);
+    for (const NamedId& v : L.suppliers) g.suppliers.push_back(v.name);
+    g.locations = L.locations;
+    g.conditions = L.conditions;
+    for (const NamedId& t : L.taxClasses) g.taxClasses.push_back(t.name);
+    collectValues(app, "item_type", g.categories);
+    collectValues(app, "manufacturer", g.manufacturers);
+    collectValues(app, "device", g.devices);
+    collectValues(app, "supplier", g.suppliers);
+    collectValues(app, "physical_location", g.locations);
+    collectValues(app, "condition", g.conditions);
+}
+
+int valuationIndexOf(const std::string& text) {
+    if (text.empty()) return 0;   // FIFO default
+    std::string t = lower(text);
+    for (int i = 0; i < (int)std::size(kValuationMethods); ++i) {
+        if (std::to_string(kValuationMethods[i].code) == t) return i;
+        if (lower(kValuationMethods[i].label).rfind(t, 0) == 0) return i;
+    }
+    return 0;
+}
+
+int taxClassIndexOf(const App& app, const InventoryItem& it) {
+    const Lookups& L = *app.lookups;
+    auto f = [&](const char* k) { auto i = it.fields.find(k); return i == it.fields.end() ? std::string() : i->second; };
+    std::string id = f("tax_class.id");
+    if (id.empty()) id = f("tax_class_id");
+    std::string name = f("tax_class");
+    for (int i = 0; i < (int)L.taxClasses.size(); ++i) {
+        if (!id.empty() && std::to_string(L.taxClasses[i].id) == id) return i;
+        if (!name.empty() && (lower(L.taxClasses[i].name) == lower(name) || std::to_string(L.taxClasses[i].id) == name)) return i;
+    }
+    return -1;
+}
+
+std::string usd(double v) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "$%.2f", v);
+    return buf;
+}
+
+void loadEditor(App& app, InventoryState& s, const InventoryItem& it) {
     auto f = [&](const char* k) { auto i = it.fields.find(k); return i == it.fields.end() ? std::string() : i->second; };
     InventoryState::Editor& e = s.editor;
     e.name = it.name;
@@ -314,11 +398,22 @@ void loadEditor(InventoryState& s, const InventoryItem& it) {
     e.qty = it.inStock;
     e.cost = it.costPrice;
     e.price = it.price;
+    e.valuationIndex = valuationIndexOf(f("valuation_method"));
+    e.taxClassIndex = taxClassIndexOf(app, it);
+    // Lookups may return ids for manufacturer/device; show the names instead.
+    if (looksNumeric(e.manufacturer)) {
+        std::string n = app.lookups->manufacturerName((long long)toNumber(e.manufacturer));
+        if (!n.empty()) e.manufacturer = n;
+    }
+    if (looksNumeric(e.device)) {
+        std::string n = app.lookups->deviceName((long long)toNumber(e.device));
+        if (!n.empty()) e.device = n;
+    }
     e.dirty = false;
 }
 
 // Builds the JSON payload for the product editor (shared by update and create).
-json editorFields(const InventoryState::Editor& e) {
+json editorFields(const App& app, const InventoryState::Editor& e) {
     json fields;
     fields["name"] = e.name;
     fields["sku"] = e.sku;
@@ -337,12 +432,25 @@ json editorFields(const InventoryState::Editor& e) {
     fields["in_stock"] = e.qty;
     fields["cost_price"] = e.cost;
     fields["price"] = e.price;
+    if (e.valuationIndex >= 0 && e.valuationIndex < (int)std::size(kValuationMethods)) {
+        fields["valuation_method"] = kValuationMethods[e.valuationIndex].code;
+    }
+    const Lookups& L = *app.lookups;
+    if (e.taxClassIndex >= 0 && e.taxClassIndex < (int)L.taxClasses.size()) {
+        fields["tax_class"] = L.taxClasses[e.taxClassIndex].id;
+    }
     return fields;
+}
+
+// Shows the adjustments the API layer made to a write (dropped unknown names, created brands...).
+void reportWriteNotes(App& app, const WriteNotes& notes) {
+    for (const std::string& m : notes.messages) app.notify(m, ui::InfoKind::Warning);
+    if (notes.createdReferences) app.refreshLookups();
 }
 
 void saveEditor(App& app, InventoryState& s, const InventoryItem& it) {
     InventoryState::Editor& e = s.editor;
-    json fields = editorFields(e);
+    json fields = editorFields(app, e);
     // Only send fields that actually have a value or changed, to avoid wiping data with blanks.
     for (auto i = fields.begin(); i != fields.end();) {
         bool blank = i.value().is_string() && i.value().get<std::string>().empty();
@@ -352,11 +460,45 @@ void saveEditor(App& app, InventoryState& s, const InventoryItem& it) {
     }
     s.productSaving = true;
     e.dirty = false;
-    saveFields(app, it.id, fields, "Product \"" + e.name + "\"");
+
+    // Apply locally for immediate feedback, then send the merged payload.
+    json payload;
+    for (InventoryItem& item : app.inventory) {
+        if (item.id != it.id) continue;
+        for (auto i = fields.begin(); i != fields.end(); ++i) item.raw[i.key()] = i.value();
+        item = InventoryItem::fromJson(item.raw);
+        payload = item.toUpdatePayload(fields);
+        break;
+    }
+    s.viewDirty = true;
+    if (payload.is_null() || payload.empty()) payload = fields;
+
+    const std::string what = "Product \"" + e.name + "\"";
+    const long long id = it.id;
+    RepairDeskApi client = app.api();
+    Async::run(
+        [client, id, payload] {
+            std::pair<ApiResult<json>, WriteNotes> out;
+            out.second.createMissing = true;
+            out.first = client.updateInventoryItem(id, payload, &out.second);
+            return out;
+        },
+        [&app, what](std::pair<ApiResult<json>, WriteNotes> out) {
+            S().productSaving = false;
+            reportWriteNotes(app, out.second);
+            if (out.first.ok) {
+                app.notify(what + " saved.", ui::InfoKind::Success);
+            } else {
+                app.notify(what + " failed: " + out.first.message, ui::InfoKind::Error);
+            }
+            app.refreshInventory(S().serverKeyword);
+        });
 }
 
-void startNewProduct(InventoryState& s) {
+void startNewProduct(App& app, InventoryState& s) {
     s.editor = InventoryState::Editor{};
+    s.editor.valuationIndex = 0;   // FIFO
+    s.editor.taxClassIndex = app.lookups->taxClasses.empty() ? -1 : 0;
     s.openProductId = 0;
     s.creatingProduct = true;
     s.productSaving = false;
@@ -364,7 +506,7 @@ void startNewProduct(InventoryState& s) {
 
 // Sends the editor contents to POST /inventory/addnewitem and refreshes the list on success.
 void createProduct(App& app, InventoryState& s) {
-    json fields = editorFields(s.editor);
+    json fields = editorFields(app, s.editor);
     // Blank optional strings are omitted so RepairDesk applies its own defaults.
     for (auto i = fields.begin(); i != fields.end();) {
         bool blank = i.value().is_string() && i.value().get<std::string>().empty();
@@ -374,10 +516,17 @@ void createProduct(App& app, InventoryState& s) {
     s.productSaving = true;
     const std::string name = s.editor.name;
     RepairDeskApi client = app.api();
-    Async::run([client, fields] { return client.addInventoryItem(fields); },
-               [&app, name](ApiResult<json> r) {
+    Async::run([client, fields] {
+                   std::pair<ApiResult<json>, WriteNotes> out;
+                   out.second.createMissing = true;
+                   out.first = client.addInventoryItem(fields, &out.second);
+                   return out;
+               },
+               [&app, name](std::pair<ApiResult<json>, WriteNotes> out) {
                    InventoryState& st = S();
                    st.productSaving = false;
+                   reportWriteNotes(app, out.second);
+                   const ApiResult<json>& r = out.first;
                    if (r.ok) {
                        app.notify("Product \"" + name + "\" created.", ui::InfoKind::Success);
                        st.creatingProduct = false;
@@ -397,10 +546,69 @@ void createProduct(App& app, InventoryState& s) {
                });
 }
 
+// Popup opened by the pencil next to the suggested-price pill.
+void drawFormulaPopup(App& app, InventoryState& s) {
+    if (s.openFormulaPopup) {
+        ImGui::OpenPopup("##priceFormula");
+        s.openFormulaPopup = false;
+    }
+    const Palette& P = Theme::get().palette();
+    const float dpi = app.dpiScale;
+    ImGui::SetNextWindowSize(ImVec2(380 * dpi, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, P.surface);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 24));
+    if (ImGui::BeginPopupModal("##priceFormula", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+                                                              ImGuiWindowFlags_NoMove)) {
+        ui::Subtitle("Suggested price formula");
+        ui::SecondaryText("price = round(cost x multiplier to the nearest step) - subtract");
+        ui::VerticalSpace(8 * dpi);
+        ui::Label("Multiplier");
+        ui::NumberField("##mult", s.formulaMultiplier, "%.2f", -1);
+        ui::Label("Round to nearest");
+        ui::NumberField("##round", s.formulaRoundTo, "%.2f", -1);
+        ui::Label("Subtract");
+        ui::NumberField("##sub", s.formulaSubtract, "%.2f", -1);
+        if (s.formulaMultiplier < 0) s.formulaMultiplier = 0;
+        if (s.formulaRoundTo < 0) s.formulaRoundTo = 0;
+
+        Settings preview = app.settings;
+        preview.priceMultiplier = s.formulaMultiplier;
+        preview.priceRoundTo = s.formulaRoundTo;
+        preview.priceSubtract = s.formulaSubtract;
+        char line[128];
+        std::snprintf(line, sizeof(line), "Preview: cost %s  ->  %s", usd(s.editor.cost).c_str(),
+                      usd(preview.suggestedPrice(s.editor.cost)).c_str());
+        ui::VerticalSpace(4 * dpi);
+        ui::SecondaryText(line);
+
+        ui::VerticalSpace(12 * dpi);
+        float btnW = 110 * dpi;
+        if (ui::SubtleButton("Reset to default")) {
+            s.formulaMultiplier = 2.0;
+            s.formulaRoundTo = 0.2;
+            s.formulaSubtract = 0.05;
+        }
+        ImGui::SameLine();
+        ui::AlignRight(btnW * 2 + ImGui::GetStyle().ItemSpacing.x);
+        if (ui::Button("Cancel", ImVec2(btnW, 0))) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        if (ui::AccentButton("Save", ImVec2(btnW, 0))) {
+            app.settings.priceMultiplier = s.formulaMultiplier;
+            app.settings.priceRoundTo = s.formulaRoundTo;
+            app.settings.priceSubtract = s.formulaSubtract;
+            app.saveSettings();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
 void drawProductPage(App& app) {
     InventoryState& s = S();
     const Palette& P = Theme::get().palette();
-    const Fonts& F = Theme::get().fonts();
     const float dpi = app.dpiScale;
     const bool creating = s.creatingProduct;
     const InventoryItem* item = creating ? nullptr : findItem(app, s.openProductId);
@@ -442,7 +650,7 @@ void drawProductPage(App& app) {
         }
     } else {
         ImGui::BeginDisabled(!s.editor.dirty || s.productSaving);
-        if (ui::Button("Discard", ImVec2(saveW, 0))) loadEditor(s, *item);
+        if (ui::Button("Discard", ImVec2(saveW, 0))) loadEditor(app, s, *item);
         ImGui::SameLine();
         if (ui::AccentButton((std::string(icons::Save) + "  Save changes").c_str(), ImVec2(saveW, 0))) saveEditor(app, s, *item);
         ImGui::EndDisabled();
@@ -457,11 +665,19 @@ void drawProductPage(App& app) {
     }
     ui::VerticalSpace(6 * dpi);
 
+    rebuildSuggestions(app, s);
     InventoryState::Editor& e = s.editor;
+    const InventoryState::Suggestions& g = s.suggest;
     auto text = [&](const char* label, const char* id, std::string& v, float w) {
         ImGui::BeginGroup();
         ui::Label(label);
         if (ui::TextField(id, v, nullptr, w)) e.dirty = true;
+        ImGui::EndGroup();
+    };
+    auto suggest = [&](const char* label, const char* id, std::string& v, const std::vector<std::string>& options, float w) {
+        ImGui::BeginGroup();
+        ui::Label(label);
+        if (ui::SuggestField(id, v, options, "Select or type a new value", w)) e.dirty = true;
         ImGui::EndGroup();
     };
 
@@ -486,14 +702,42 @@ void drawProductPage(App& app) {
         ImGui::SameLine();
         ImGui::BeginGroup();
         ui::Label("Price");
-        if (ui::NumberField("##price", e.price, "%.2f", third)) e.dirty = true;
+        {
+            // Price box, then a pill with the suggested price and a pencil to edit the formula.
+            const double suggested = app.settings.suggestedPrice(e.cost);
+            const std::string pillText = usd(suggested);
+            const float pillW = ImGui::CalcTextSize(pillText.c_str()).x + 24 * dpi;
+            const float pencilW = ImGui::GetFrameHeight();
+            const float spacing = ImGui::GetStyle().ItemSpacing.x;
+            float priceW = third - pillW - pencilW - spacing * 2;
+            if (priceW < 90 * dpi) priceW = 90 * dpi;
+            if (ui::NumberField("##price", e.price, "%.2f", priceW)) e.dirty = true;
+            ImGui::SameLine();
+            char tip[160];
+            std::snprintf(tip, sizeof(tip), "Suggested price: round(cost x %g to nearest %.2f) - %.2f. Click to use it.",
+                          app.settings.priceMultiplier, app.settings.priceRoundTo, app.settings.priceSubtract);
+            if (ui::PillButton("##suggestPrice", pillText.c_str(), tip)) {
+                if (e.price != suggested) { e.price = suggested; e.dirty = true; }
+            }
+            // Tiny pencil: a frame-high hit area with a reduced glyph.
+            ImGui::SameLine(0, 2 * dpi);
+            ImGui::SetWindowFontScale(0.75f);
+            bool editFormula = ui::IconButton("editFormula", icons::Edit, "Edit the suggested-price formula");
+            ImGui::SetWindowFontScale(1.0f);
+            if (editFormula) {
+                s.formulaMultiplier = app.settings.priceMultiplier;
+                s.formulaRoundTo = app.settings.priceRoundTo;
+                s.formulaSubtract = app.settings.priceSubtract;
+                s.openFormulaPopup = true;
+            }
+        }
         ImGui::EndGroup();
 
         text("SKU", "##sku", e.sku, third);
         ImGui::SameLine();
         text("UPC", "##upc", e.upc, third);
         ImGui::SameLine();
-        text("Category", "##cat", e.category, third);
+        suggest("Category", "##cat", e.category, g.categories, third);
 
         ImGui::BeginGroup();
         ui::Label("Description");
@@ -510,18 +754,42 @@ void drawProductPage(App& app) {
         ui::Subtitle("Details");
         float full = ImGui::GetContentRegionAvail().x;
         float third = (full - ImGui::GetStyle().ItemSpacing.x * 2) / 3.0f;
-        text("Manufacturer", "##man", e.manufacturer, third);
+        suggest("Manufacturer", "##man", e.manufacturer, g.manufacturers, third);
         ImGui::SameLine();
-        text("Device", "##dev", e.device, third);
+        suggest("Device", "##dev", e.device, g.devices, third);
         ImGui::SameLine();
-        text("Supplier", "##sup", e.supplier, third);
-        text("Condition", "##cond", e.condition, third);
+        suggest("Supplier", "##sup", e.supplier, g.suppliers, third);
+        suggest("Condition", "##cond", e.condition, g.conditions, third);
         ImGui::SameLine();
-        text("Physical location", "##loc", e.location, third);
+        suggest("Physical location", "##loc", e.location, g.locations, third);
         ImGui::SameLine();
         text("Minimum price", "##minp", e.minimumPrice, third);
-        text("Reorder level", "##reorder", e.reorderLevel, third);
+
+        ImGui::BeginGroup();
+        ui::Label("Valuation method");
+        {
+            static const std::vector<std::string> valuationLabels = [] {
+                std::vector<std::string> v;
+                for (const ValuationMethod& m : kValuationMethods) v.push_back(m.label);
+                return v;
+            }();
+            if (ui::ComboField("##valuation", e.valuationIndex, valuationLabels, "Select...", third)) e.dirty = true;
+        }
+        ImGui::EndGroup();
         ImGui::SameLine();
+        ImGui::BeginGroup();
+        ui::Label("Tax class");
+        if (g.taxClasses.empty()) {
+            ImGui::BeginDisabled();
+            int none = -1;
+            ui::ComboField("##tax", none, g.taxClasses, app.lookupsLoading ? "Loading..." : "No tax classes", third);
+            ImGui::EndDisabled();
+        } else if (ui::ComboField("##tax", e.taxClassIndex, g.taxClasses, "Select a tax class", third)) {
+            e.dirty = true;
+        }
+        ImGui::EndGroup();
+        ImGui::SameLine();
+        text("Reorder level", "##reorder", e.reorderLevel, third);
         text("Stock warning", "##warn", e.stockWarning, third);
         ImGui::BeginGroup();
         ui::Label("Notes");
@@ -555,7 +823,7 @@ void drawProductPage(App& app) {
         ui::EndCard();
     }
     ImGui::EndChild();
-    (void)F;
+    drawFormulaPopup(app, s);
 }
 
 void drawBulkModal(App& app) {
@@ -674,7 +942,7 @@ void inventory(App& app) {
         if (it) {
             s.openProductId = app.pendingProductId;
             app.pendingProductId = 0;
-            loadEditor(s, *it);
+            loadEditor(app, s, *it);
         } else if (!app.inventoryLoading) {
             app.pendingProductId = 0;   // e.g. a freshly created item that the server did not return yet
         }
@@ -722,7 +990,7 @@ void inventory(App& app) {
         }
         ImGui::SameLine();
         if (ui::AccentButton((std::string(icons::Add) + "  New product").c_str())) {
-            startNewProduct(s);
+            startNewProduct(app, s);
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ui::Tooltip("Add a new product to RepairDesk inventory");
         if (!s.serverKeyword.empty()) {
@@ -839,7 +1107,7 @@ void inventory(App& app) {
             opts.onRowClicked = [&](int row) {
                 const InventoryItem& it = app.inventory[s.view[row]];
                 s.openProductId = it.id;
-                loadEditor(s, it);
+                loadEditor(app, s, it);
             };
             s.table.draw((int)s.view.size(), [&](int row) -> const FlatRecord& { return app.inventory[s.view[row]].fields; }, opts);
 

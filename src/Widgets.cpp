@@ -1,7 +1,10 @@
 #include "Widgets.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdarg>
+#include <cstdio>
 
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
@@ -112,6 +115,24 @@ bool IconButton(const char* id, const char* icon, const char* tooltip, bool acce
     float h = ImGui::GetFrameHeight();
     bool pressed = ImGui::Button(icon, ImVec2(h, h));
     ImGui::PopStyleColor(5);
+    if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) Tooltip(tooltip);
+    ImGui::PopID();
+    return pressed;
+}
+
+bool PillButton(const char* id, const char* label, const char* tooltip) {
+    ImGui::PushID(id);
+    const bool dark = Theme::get().isDark();
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetFrameHeight() * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, ImGui::GetStyle().FramePadding.y));
+    ImGui::PushStyleColor(ImGuiCol_Button, Theme::withAlpha(P().accent, dark ? 0.22f : 0.14f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Theme::withAlpha(P().accent, dark ? 0.34f : 0.24f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::withAlpha(P().accent, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Border, Theme::withAlpha(P().accent, 0.6f));
+    ImGui::PushStyleColor(ImGuiCol_Text, P().accent);
+    bool pressed = ImGui::Button(label);
+    ImGui::PopStyleColor(5);
+    ImGui::PopStyleVar(2);
     if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) Tooltip(tooltip);
     ImGui::PopID();
     return pressed;
@@ -281,6 +302,127 @@ bool IntField(const char* id, int& value, float width) {
     if (width != 0.0f) ImGui::SetNextItemWidth(width);
     bool changed = ImGui::InputInt(id, &value, 0, 0);
     focusUnderline();
+    return changed;
+}
+
+static std::string lowerAscii(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    return s;
+}
+
+bool SuggestField(const char* id, std::string& value, const std::vector<std::string>& options, const char* hint, float width) {
+    ImGui::PushID(id);
+    const float frameH = ImGui::GetFrameHeight();
+    if (width == 0.0f) width = ImGui::CalcItemWidth();
+    if (width < 0.0f) width = ImGui::GetContentRegionAvail().x + width + 1.0f;
+    const float arrowW = frameH;
+
+    // Text input with room for the chevron on the right.
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, ImGui::GetStyle().FramePadding.y));
+    ImGui::SetNextItemWidth(width - arrowW);
+    bool changed = hint ? ImGui::InputTextWithHint("##text", hint, &value) : ImGui::InputText("##text", &value);
+    ImGui::PopStyleVar();
+    focusUnderline();
+    const bool textActive = ImGui::IsItemActive();
+    const bool textActivated = ImGui::IsItemActivated();
+    ImVec2 fieldMin = ImGui::GetItemRectMin();
+    ImVec2 fieldMax = ImGui::GetItemRectMax();
+
+    // Chevron button glued to the field.
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, P().control);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, P().controlHover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, P().controlHover);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Text, P().textSecondary);
+    bool arrowPressed = ImGui::Button(icons::ChevronDown, ImVec2(arrowW, frameH));
+    ImGui::PopStyleColor(5);
+    fieldMax.x = ImGui::GetItemRectMax().x;
+
+    // Open the popup when typing starts or the chevron is pressed.
+    ImGuiStorage* st = ImGui::GetStateStorage();
+    const ImGuiID openKey = ImGui::GetID("##open");
+    const ImGuiID allKey = ImGui::GetID("##all");
+    bool open = st->GetBool(openKey);
+    if (arrowPressed) { open = !open; st->SetBool(allKey, true); }
+    if (textActivated || (textActive && changed)) { open = true; st->SetBool(allKey, false); }
+    if (changed) st->SetBool(allKey, false);
+
+    if (open && !options.empty()) {
+        const bool showAll = st->GetBool(allKey);
+        const std::string needle = lowerAscii(value);
+        std::vector<const std::string*> matches;
+        for (const std::string& o : options) {
+            if (showAll || needle.empty() || lowerAscii(o).find(needle) != std::string::npos) matches.push_back(&o);
+        }
+        // Hide the list when the typed text is the only exact match.
+        if (!showAll && matches.size() == 1 && lowerAscii(*matches[0]) == needle) matches.clear();
+
+        if (!matches.empty()) {
+            const float rowH = ImGui::GetTextLineHeightWithSpacing() + 6.0f;
+            const float listH = std::min((float)matches.size(), 8.0f) * rowH + 8.0f;
+            ImGui::SetNextWindowPos(ImVec2(fieldMin.x, fieldMax.y + 2.0f));
+            ImGui::SetNextWindowSize(ImVec2(fieldMax.x - fieldMin.x, listH));
+            ImGui::PushStyleColor(ImGuiCol_PopupBg, P().surface);
+            ImGui::PushStyleColor(ImGuiCol_Border, P().border);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+            ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings |
+                                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoCollapse;
+            char title[64];
+            std::snprintf(title, sizeof(title), "##suggest_%08X", (unsigned)openKey);
+            ImGui::Begin(title, nullptr, flags);
+            ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+            bool hoveringPopup = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
+            for (const std::string* m : matches) {
+                if (ImGui::Selectable(m->c_str(), false, 0, ImVec2(0, rowH - 6.0f))) {
+                    value = *m;
+                    changed = true;
+                    open = false;
+                }
+            }
+            ImGui::End();
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(2);
+
+            // Close on click elsewhere, Escape, or when the field loses focus without a hover on the list.
+            bool clickedOutside = ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !hoveringPopup &&
+                                  !ImGui::IsMouseHoveringRect(fieldMin, fieldMax);
+            if (clickedOutside || ImGui::IsKeyPressed(ImGuiKey_Escape)) open = false;
+            if (!textActive && !hoveringPopup && !arrowPressed && !ImGui::IsMouseHoveringRect(fieldMin, fieldMax) &&
+                ImGui::IsMouseReleased(ImGuiMouseButton_Left)) open = false;
+        } else if (!textActive && !arrowPressed) {
+            open = false;
+        }
+    } else if (open && options.empty()) {
+        open = false;
+    }
+    st->SetBool(openKey, open);
+    ImGui::PopID();
+    return changed;
+}
+
+bool ComboField(const char* id, int& index, const std::vector<std::string>& options, const char* placeholder, float width) {
+    if (width != 0.0f) ImGui::SetNextItemWidth(width);
+    const char* preview = (index >= 0 && index < (int)options.size()) ? options[index].c_str() : placeholder;
+    bool changed = false;
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, P().surface);
+    if (index < 0 || index >= (int)options.size()) ImGui::PushStyleColor(ImGuiCol_Text, P().textSecondary);
+    bool opened = ImGui::BeginCombo(id, preview);
+    if (index < 0 || index >= (int)options.size()) ImGui::PopStyleColor();
+    if (opened) {
+        for (int i = 0; i < (int)options.size(); ++i) {
+            bool selected = i == index;
+            if (ImGui::Selectable(options[i].c_str(), selected)) {
+                index = i;
+                changed = true;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopStyleColor();
     return changed;
 }
 

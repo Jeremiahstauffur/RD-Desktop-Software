@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -24,7 +25,12 @@ public:
     void applyTheme();                 // re-applies colours from `settings`
     void saveSettings();
 
-    RepairDeskApi api() const { return RepairDeskApi(settings.baseUrl, settings.apiKey, settings.accessToken); }
+    // API client carrying the current credentials and the cached reference data.
+    RepairDeskApi api() const {
+        RepairDeskApi c(settings.baseUrl, settings.apiKey, settings.accessToken);
+        c.setLookups(lookups);
+        return c;
+    }
     bool connected() const { return settings.hasAnyAuth(); }
 
     // OAuth2 ---------------------------------------------------------------
@@ -58,6 +64,15 @@ public:
     // Finds an item by scanned code: SKU first, then UPC, then name.
     // Returns -1 when nothing matches.
     int findInventoryByCode(const std::string& code) const;
+
+    // Reference data (manufacturers, devices, suppliers, tax classes, conditions,
+    // physical locations). Loaded with the first inventory refresh; shared with
+    // the API clients so names typed in the UI can be converted to ids.
+    std::shared_ptr<const Lookups> lookups = std::make_shared<Lookups>();
+    bool lookupsLoading = false;
+    void refreshLookups();
+    // Adds freshly created references (brand/model) to the cache.
+    void mergeLookups(const Lookups& more);
 
     // Feedback -------------------------------------------------------------
     void notify(const std::string& message, ui::InfoKind kind = ui::InfoKind::Info);

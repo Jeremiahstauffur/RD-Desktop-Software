@@ -103,7 +103,7 @@ InventoryItem InventoryItem::fromJson(const json& j) {
     item.upc = pickString(j, {"upc_code", "upc", "barcode"});
     item.category = pickString(j, {"item_type", "category", "type", "category_name"});
     item.manufacturer = pickString(j, {"manufacturer", "manufacturer_name", "brand"});
-    item.device = pickString(j, {"device", "device_name", "model"});
+    item.device = pickString(j, {"device", "device_name", "devices_names", "model"});
     item.price = pickNumber(j, {"price", "retail_price", "sale_price"});
     item.costPrice = pickNumber(j, {"cost_price", "cost"});
     item.inStock = (int)pickNumber(j, {"in_stock", "quantity", "stock", "qty"});
@@ -126,7 +126,117 @@ InventoryItem InventoryItem::fromJson(const json& j) {
     ensure("price", num);
     std::snprintf(num, sizeof(num), "%.2f", item.costPrice);
     ensure("cost_price", num);
+    // The list returns tax_class as an object; expose its name under the plain key.
+    if (!item.fields.count("tax_class")) {
+        auto t = item.fields.find("tax_class.tax_class");
+        if (t != item.fields.end()) item.fields["tax_class"] = t->second;
+    }
     return item;
+}
+
+// ---------------------------------------------------------------------------
+// Lookups
+// ---------------------------------------------------------------------------
+
+static bool isIntegerText(const std::string& s);
+
+template <typename T>
+static const T* findNamed(const std::vector<T>& list, const std::string& nameOrId) {
+    if (nameOrId.empty()) return nullptr;
+    if (isIntegerText(nameOrId)) {
+        long long id = std::stoll(nameOrId);
+        for (const T& e : list) if (e.id == id) return &e;
+    }
+    const std::string needle = toLower(nameOrId);
+    for (const T& e : list) if (toLower(e.name) == needle) return &e;
+    return nullptr;
+}
+
+const NamedId* Lookups::findManufacturer(const std::string& nameOrId) const { return findNamed(manufacturers, nameOrId); }
+const NamedId* Lookups::findSupplier(const std::string& nameOrId) const { return findNamed(suppliers, nameOrId); }
+const NamedId* Lookups::findTaxClass(const std::string& nameOrId) const { return findNamed(taxClasses, nameOrId); }
+
+const DeviceInfo* Lookups::findDevice(const std::string& nameOrId, long long manufacturerId) const {
+    if (nameOrId.empty()) return nullptr;
+    if (isIntegerText(nameOrId)) {
+        long long id = std::stoll(nameOrId);
+        for (const DeviceInfo& d : devices) if (d.id == id) return &d;
+    }
+    const std::string needle = toLower(nameOrId);
+    const DeviceInfo* anyBrand = nullptr;
+    for (const DeviceInfo& d : devices) {
+        if (toLower(d.name) != needle) continue;
+        if (manufacturerId == 0 || d.manufacturerId == manufacturerId) return &d;
+        if (!anyBrand) anyBrand = &d;
+    }
+    return anyBrand;
+}
+
+std::string Lookups::manufacturerName(long long id) const {
+    for (const NamedId& m : manufacturers) if (m.id == id) return m.name;
+    return "";
+}
+
+std::string Lookups::deviceName(long long id) const {
+    for (const DeviceInfo& d : devices) if (d.id == id) return d.name;
+    return "";
+}
+
+std::string Lookups::taxClassName(long long id) const {
+    for (const NamedId& t : taxClasses) if (t.id == id) return t.name;
+    return "";
+}
+
+void resolveLookupIds(json& body, const Lookups& lookups, std::vector<std::string>* notes) {
+    if (!body.is_object()) return;
+    auto note = [&](const std::string& msg) { if (notes) notes->push_back(msg); };
+    auto textOf = [](const json& v) -> std::string {
+        if (v.is_string()) return v.get<std::string>();
+        if (v.is_number_integer()) return std::to_string(v.get<long long>());
+        if (v.is_number_float()) return std::to_string((long long)v.get<double>());
+        return "";
+    };
+    // Replaces body[key] with the id found by `find`, or drops the field.
+    auto resolve = [&](const char* key, const char* label, auto&& find) -> long long {
+        auto it = body.find(key);
+        if (it == body.end()) return 0;
+        if (it->is_number_integer()) return it->get<long long>();
+        std::string text = textOf(*it);
+        if (text.empty() || it->is_null()) { body.erase(key); return 0; }
+        if (isIntegerText(text)) { long long id = std::stoll(text); body[key] = id; return id; }
+        long long id = find(text);
+        if (id != 0) { body[key] = id; return id; }
+        body.erase(key);
+        note(std::string(label) + " \"" + text + "\" is not known to RepairDesk and was left out.");
+        return 0;
+    };
+
+    long long manufacturerId = resolve("manufacturer", "Manufacturer", [&](const std::string& t) {
+        const NamedId* m = lookups.findManufacturer(t); return m ? m->id : 0; });
+    resolve("device", "Device", [&](const std::string& t) {
+        const DeviceInfo* d = lookups.findDevice(t, manufacturerId); return d ? d->id : 0; });
+    resolve("supplier", "Supplier", [&](const std::string& t) {
+        const NamedId* s = lookups.findSupplier(t); return s ? s->id : 0; });
+    resolve("tax_class", "Tax class", [&](const std::string& t) {
+        const NamedId* c = lookups.findTaxClass(t); return c ? c->id : 0; });
+
+    for (const char* k : {"tax_inclusive", "valuation_method", "is_serialize", "in_stock"}) {
+        auto it = body.find(k);
+        if (it == body.end()) continue;
+        if (it->is_string()) {
+            const std::string& s = it->get_ref<const std::string&>();
+            if (s.empty()) body.erase(k);
+            else body[k] = (long long)std::atof(s.c_str());
+        } else if (it->is_boolean()) {
+            body[k] = it->get<bool>() ? 1 : 0;
+        } else if (it->is_number_float()) {
+            body[k] = (long long)it->get<double>();
+        }
+    }
+    for (const char* k : {"price", "cost_price"}) {
+        auto it = body.find(k);
+        if (it != body.end() && it->is_string()) body[k] = std::atof(it->get_ref<const std::string&>().c_str());
+    }
 }
 
 // True when the whole string is a (signed) integer literal.
@@ -553,14 +663,201 @@ ApiResult<InventoryItem> RepairDeskApi::getInventoryItem(long long id) const {
     return out;
 }
 
-ApiResult<json> RepairDeskApi::addInventoryItem(const json& fields) const {
-    return send("POST", "/inventory/addnewitem", fields);
+json RepairDeskApi::prepareWriteBody(const json& fields, WriteNotes* notes) const {
+    json body = fields.is_object() ? fields : json::object();
+    std::vector<std::string>* msgs = notes ? &notes->messages : nullptr;
+    if (notes && notes->createMissing) {
+        Lookups lk = lookups_ ? *lookups_ : Lookups{};
+        if (createMissingReferences(body, lk, notes->messages)) notes->createdReferences = true;
+        resolveLookupIds(body, lk, msgs);
+    } else if (lookups_) {
+        resolveLookupIds(body, *lookups_, msgs);
+    } else {
+        resolveLookupIds(body, Lookups{}, msgs);
+    }
+    return body;
 }
 
-ApiResult<json> RepairDeskApi::updateInventoryItem(long long id, const json& fields) const {
-    json body = fields;
+ApiResult<json> RepairDeskApi::addInventoryItem(const json& fields, WriteNotes* notes) const {
+    json body = prepareWriteBody(fields, notes);
+    // POST /inventory/addnewitem answers HTTP 500 when no tax class is given.
+    if (!body.contains("tax_class") && lookups_ && !lookups_->taxClasses.empty()) {
+        body["tax_class"] = lookups_->taxClasses.front().id;
+        if (!body.contains("tax_inclusive")) body["tax_inclusive"] = 0;
+        if (notes) notes->messages.push_back("Tax class defaulted to \"" + lookups_->taxClasses.front().name + "\".");
+    }
+    return send("POST", "/inventory/addnewitem", body);
+}
+
+ApiResult<json> RepairDeskApi::updateInventoryItem(long long id, const json& fields, WriteNotes* notes) const {
+    json body = prepareWriteBody(fields, notes);
     body["id"] = id;
     return send("PUT", "/inventory/" + std::to_string(id), body);
+}
+
+// ---------------------------------------------------------------------------
+// Reference data
+// ---------------------------------------------------------------------------
+
+ApiResult<Lookups> RepairDeskApi::loadLookups() const {
+    ApiResult<Lookups> out;
+    Lookups& L = out.value;
+    std::string errors;
+    auto fail = [&](const char* what, const ApiResult<json>& r) {
+        if (!errors.empty()) errors += "; ";
+        errors += std::string(what) + ": " + r.message;
+    };
+
+    ApiResult<json> devices = get("/devices");
+    if (devices.ok) {
+        std::unordered_set<long long> seenBrands;
+        for (const json& d : extractList(devices.value)) {
+            DeviceInfo info;
+            info.id = (long long)pickNumber(d, {"id"});
+            info.manufacturerId = (long long)pickNumber(d, {"manufacturer_id"});
+            info.name = pickString(d, {"name"});
+            if (info.id == 0 || info.name.empty()) continue;
+            std::string company = pickString(d, {"company", "manufacturer"});
+            if (info.manufacturerId != 0 && !company.empty() && seenBrands.insert(info.manufacturerId).second) {
+                L.manufacturers.push_back({info.manufacturerId, company});
+            }
+            L.devices.push_back(std::move(info));
+        }
+    } else {
+        fail("devices", devices);
+    }
+
+    ApiResult<json> taxes = get("/taxclasses");
+    if (taxes.ok) {
+        for (const json& t : extractList(taxes.value)) {
+            NamedId c{(long long)pickNumber(t, {"id"}), pickString(t, {"tax_class", "name"})};
+            if (c.id != 0) L.taxClasses.push_back(std::move(c));
+        }
+    } else {
+        fail("tax classes", taxes);
+    }
+
+    ApiResult<json> info = get("/inventory/additionalinfo");
+    if (info.ok && info.value.is_object() && info.value.contains("data") && info.value["data"].is_object()) {
+        const json& data = info.value["data"];
+        if (data.contains("conditions") && data["conditions"].is_array()) {
+            for (const json& c : data["conditions"]) {
+                std::string n = c.is_object() ? pickString(c, {"name", "id"}) : jsonToText(c);
+                if (!n.empty() && std::find(L.conditions.begin(), L.conditions.end(), n) == L.conditions.end()) L.conditions.push_back(n);
+            }
+        }
+        if (data.contains("physical_locations") && data["physical_locations"].is_array()) {
+            for (const json& p : data["physical_locations"]) {
+                std::string n = p.is_object() ? pickString(p, {"name"}) : jsonToText(p);
+                if (!n.empty()) L.locations.push_back(n);
+            }
+        }
+    } else if (!info.ok) {
+        fail("additional info", info);
+    }
+
+    // Suppliers have no listing endpoint; purchase orders carry supplier name + vendorID.
+    std::unordered_set<long long> seenVendors;
+    for (int page = 1; page <= 10; ++page) {
+        ApiResult<json> po = get("/purchaseorders", {{"page", std::to_string(page)}, {"pagesize", "500"}});
+        if (!po.ok) { if (page == 1) fail("purchase orders", po); break; }
+        for (const json& o : extractList(po.value)) {
+            NamedId s{(long long)pickNumber(o, {"vendorID", "vendor_id", "supplier_id"}), pickString(o, {"supplier"})};
+            if (s.id != 0 && !s.name.empty() && seenVendors.insert(s.id).second) L.suppliers.push_back(std::move(s));
+        }
+        int totalPages = 1;
+        if (po.value.is_object() && po.value.contains("data") && po.value["data"].is_object()) {
+            const json& d = po.value["data"];
+            if (d.contains("pagination") && d["pagination"].is_object()) totalPages = (int)pickNumber(d["pagination"], {"total_pages"});
+        }
+        if (page >= totalPages) break;
+    }
+
+    auto byName = [](const auto& a, const auto& b) { return toLower(a.name) < toLower(b.name); };
+    std::sort(L.manufacturers.begin(), L.manufacturers.end(), byName);
+    std::sort(L.devices.begin(), L.devices.end(), byName);
+    std::sort(L.suppliers.begin(), L.suppliers.end(), byName);
+    std::sort(L.locations.begin(), L.locations.end(), [](const std::string& a, const std::string& b) { return toLower(a) < toLower(b); });
+
+    L.loaded = devices.ok || taxes.ok || info.ok;
+    out.ok = L.loaded;
+    out.status = devices.status;
+    out.message = errors.empty() ? "OK" : errors;
+    return out;
+}
+
+static ApiResult<long long> createdId(const ApiResult<json>& r) {
+    ApiResult<long long> out;
+    out.ok = r.ok;
+    out.status = r.status;
+    out.message = r.message;
+    if (r.value.is_object() && r.value.contains("data") && r.value["data"].is_object()) {
+        out.value = (long long)pickNumber(r.value["data"], {"id"});
+    }
+    // HTTP 409 (already exists) also carries the existing record.
+    if (out.value != 0 && r.status == 409) out.ok = true;
+    if (out.ok && out.value == 0) { out.ok = false; out.message = "Server did not return an id."; }
+    return out;
+}
+
+ApiResult<long long> RepairDeskApi::createBrand(const std::string& name) const {
+    return createdId(send("POST", "/createbrand", json{{"name", name}}));
+}
+
+ApiResult<long long> RepairDeskApi::createModel(long long manufacturerId, const std::string& name) const {
+    return createdId(send("POST", "/createmodel", json{{"manufacturerId", manufacturerId}, {"brandId", manufacturerId}, {"name", name}}));
+}
+
+bool RepairDeskApi::createMissingReferences(json& body, Lookups& lookups, std::vector<std::string>& notes) const {
+    if (!body.is_object()) return false;
+    bool created = false;
+    auto nameAt = [&](const char* key) -> std::string {
+        auto it = body.find(key);
+        if (it == body.end() || !it->is_string()) return "";
+        const std::string& s = it->get_ref<const std::string&>();
+        return isIntegerText(s) ? "" : s;
+    };
+
+    long long manufacturerId = 0;
+    std::string brand = nameAt("manufacturer");
+    if (!brand.empty()) {
+        if (const NamedId* m = lookups.findManufacturer(brand)) {
+            manufacturerId = m->id;
+        } else {
+            ApiResult<long long> r = createBrand(brand);
+            if (r.ok) {
+                manufacturerId = r.value;
+                lookups.manufacturers.push_back({manufacturerId, brand});
+                body["manufacturer"] = manufacturerId;
+                notes.push_back("Created manufacturer \"" + brand + "\".");
+                created = true;
+            } else {
+                notes.push_back("Could not create manufacturer \"" + brand + "\": " + r.message);
+            }
+        }
+    } else if (body.contains("manufacturer") && body["manufacturer"].is_number_integer()) {
+        manufacturerId = body["manufacturer"].get<long long>();
+    } else if (body.contains("manufacturer") && body["manufacturer"].is_string()) {
+        manufacturerId = std::stoll(body["manufacturer"].get<std::string>());
+    }
+
+    std::string device = nameAt("device");
+    if (!device.empty() && !lookups.findDevice(device, manufacturerId)) {
+        if (manufacturerId == 0) {
+            notes.push_back("Device \"" + device + "\" needs a manufacturer before it can be created.");
+        } else {
+            ApiResult<long long> r = createModel(manufacturerId, device);
+            if (r.ok) {
+                lookups.devices.push_back({r.value, manufacturerId, device});
+                body["device"] = r.value;
+                notes.push_back("Created device \"" + device + "\".");
+                created = true;
+            } else {
+                notes.push_back("Could not create device \"" + device + "\": " + r.message);
+            }
+        }
+    }
+    return created;
 }
 
 ApiResult<json> RepairDeskApi::deleteInventoryItem(long long id) const {

@@ -103,6 +103,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-07 | Stock take submit sent the scanned count as `in_stock`, but RepairDesk applies `in_stock` in `PUT /inventory/{id}` as a *change* (adjustment), so stock was being added instead of set. `StockTakePanel.cpp` now sends `scanned − dbQty` (`TargetEntry::change`), skips items with change 0, and the Submit tooltip/README say "adjusts by the change". | Done (awaiting user re-test against live API) |
 | 2026-10-07 | OAuth token exchange: `tokenRequest` now unwraps RepairDesk's `{success, statusCode, message, data}` envelope (tokens and `error`/`error_description`/`hint` live in `data`, HTTP is always 200), `finishOAuthWithCode` accepts a full redirect URL, token-exchange failures get a redirect-URI/credentials hint, loopback landing page no longer claims "connected" before the exchange; README gained an OAuth troubleshooting section. | Done (awaiting user re-test with real credentials) |
 | 2026-10-07 | Stock take submit returned HTTP 500: `InventoryItem::toUpdatePayload` now sends only the fields of the API's `Item` schema (scalars; reference objects collapse to their id) instead of echoing the whole list record. After submit only the updated items are re-read (`RepairDeskApi::getInventoryItem`, keyword=id) and swapped into the cache via `App::replaceInventoryItem` (+ `inventoryRevision` so the table re-sorts); no full inventory reload. Updated rows leave the sidebar; failed ones stay for re-submit. | Done (awaiting user re-test against live API) |
 | 2026-10-07 | Inventory refresh progress bar: 3px accent bar along the top edge (`App::drawLoadProgressBar`), previous item count = 100%, extra items drawn as a dotted segment; `RepairDeskApi::listInventory` gained an optional per-page progress callback. | Done |
@@ -117,6 +118,9 @@ Newest entries first. One line per task: date, what changed, status.
 - [ ] Inventory bulk actions and inline edits (`InventoryPage.cpp`) still call `app.refreshInventory()`
       after saving; switch them to the per-item `getInventoryItem` + `replaceInventoryItem` path used by
       the stock take.
+- [ ] Bulk "Edit quantity", inline `in_stock` edits and the product page (`InventoryPage.cpp`) still send
+      the typed value as `in_stock`; since the API treats it as an adjustment they must be converted to
+      `new − current` (or relabelled as "adjust by") the same way the stock take now does.
 - [x] Add a short "Troubleshooting" section to `README.md` (OAuth redirect issues, firewall prompts
       for the loopback listener on port 8731). (2026-10-07)
 - [ ] Loopback listener (`http::waitForLoopbackRedirect`) accepts a single IPv4 connection and has no
@@ -157,6 +161,10 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   `InventoryItem::toUpdatePayload`, which whitelists the documented fields and collapses reference
   objects to ids. The spec lives at <https://api-docs.repairdesk.co/rd-unresolved-swagger.json>
   (components → schemas → `Item`) — fetch it instead of guessing field names.
+- **`in_stock` in `PUT /inventory/{id}` is a delta, not an absolute quantity.** RepairDesk adds the
+  value to the current stock (it does not accept an overwrite). Send `desired − current` and skip the
+  request when the change is 0 (see `applyToRepairDesk` in `StockTakePanel.cpp`). Re-read the item
+  afterwards to pick up the server's resulting quantity.
 - **`GET /inventory?keyword=<id>` fetches a single item.** The keyword filter matches id, name and SKU,
   so filter the result by exact id (`RepairDeskApi::getInventoryItem`). Use it to refresh individual
   rows after an update rather than re-downloading the whole inventory.
@@ -190,6 +198,9 @@ was ambiguous, record here what information would have helped.
 - (2026-10-07) For "internal server error" reports, paste the full toast text (it includes the server's
   `message`) and, if possible, the JSON of one affected item from the inventory list; the 500 could not
   be reproduced without live credentials, so the fix was derived from the API schema.
+- (2026-10-07) When an API field behaves differently from its documentation (e.g. `in_stock` being an
+  adjustment rather than a value), state the observed before/after numbers ("had 5, scanned 3, ended
+  up with 8") so the semantics are unambiguous and other callers of the same field can be checked.
 
 ---
 

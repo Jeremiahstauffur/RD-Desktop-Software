@@ -304,6 +304,7 @@ void App::refreshInventory(const std::string& keyword) {
         inventoryError = "Not connected. Open Settings and enter an API key or connect with OAuth2.";
         return;
     }
+    if (!lookups->loaded) refreshLookups();
     inventoryLoading = true;
     inventoryError.clear();
     inventoryPreviousTotal = inventory.size();
@@ -331,6 +332,32 @@ void App::refreshInventory(const std::string& keyword) {
                 notify("Inventory: " + result.message, ui::InfoKind::Error);
             }
         });
+}
+
+void App::refreshLookups() {
+    if (lookupsLoading || !connected()) return;
+    lookupsLoading = true;
+    RepairDeskApi client = api();
+    Async::run([client] { return client.loadLookups(); },
+               [this](ApiResult<Lookups> result) {
+                   lookupsLoading = false;
+                   if (result.ok) {
+                       lookups = std::make_shared<Lookups>(std::move(result.value));
+                   }
+                   if (result.message != "OK") notify("Reference data: " + result.message, ui::InfoKind::Warning);
+               });
+}
+
+void App::mergeLookups(const Lookups& more) {
+    auto merged = std::make_shared<Lookups>(*lookups);
+    for (const NamedId& m : more.manufacturers) {
+        if (!merged->findManufacturer(std::to_string(m.id))) merged->manufacturers.push_back(m);
+    }
+    for (const DeviceInfo& d : more.devices) {
+        if (!merged->findDevice(std::to_string(d.id))) merged->devices.push_back(d);
+    }
+    merged->loaded = true;
+    lookups = merged;
 }
 
 void App::replaceInventoryItem(const InventoryItem& item) {
