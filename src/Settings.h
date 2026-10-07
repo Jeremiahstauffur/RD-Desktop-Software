@@ -21,7 +21,7 @@ struct Settings {
     bool hasAnyAuth() const { return hasOAuthToken() || !apiKey.empty(); }
     bool darkTheme = true;
     float accent[3] = {0.0f, 0.47f, 0.83f};   // Windows 11 default blue (#0078D4)
-    int inventoryPageSize = 1000;
+    int inventoryPageSize = 0;                 // 0 = load all items (unlimited)
 
     // Directory used for settings.json and imgui layout persistence.
     static std::string dataDirectory();

@@ -275,9 +275,9 @@ void App::refreshInventory(const std::string& keyword) {
     inventoryLoading = true;
     inventoryError.clear();
     RepairDeskApi client = api();
-    int pageSize = settings.inventoryPageSize;
+    int maxItems = settings.inventoryPageSize;
     Async::run(
-        [client, keyword, pageSize] { return client.listInventory(keyword, pageSize); },
+        [client, keyword, maxItems] { return client.listInventory(keyword, maxItems); },
         [this](ApiResult<std::vector<InventoryItem>> result) {
             inventoryLoading = false;
             inventoryLoadedOnce = true;

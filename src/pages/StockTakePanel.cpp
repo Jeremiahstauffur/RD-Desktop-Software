@@ -76,24 +76,58 @@ void handleScan(App& app) {
     s.entries.insert(s.entries.begin(), e);
 }
 
+struct TargetEntry {
+    InventoryItem item;
+    int scanned = 0;
+};
+
 void applyToRepairDesk(App& app) {
     StockTakeState& s = S();
     if (s.entries.empty() || s.applying) return;
     s.applying = true;
-    std::vector<ScanEntry> entries = s.entries;
+
+    std::vector<TargetEntry> targets;
+    targets.reserve(s.entries.size());
+    for (const ScanEntry& e : s.entries) {
+        TargetEntry t;
+        t.scanned = e.scanned;
+        int idx = -1;
+        for (size_t i = 0; i < app.inventory.size(); ++i) {
+            if (app.inventory[i].id == e.id) {
+                idx = (int)i;
+                break;
+            }
+        }
+        if (idx >= 0) {
+            t.item = app.inventory[idx];
+        } else {
+            t.item.id = e.id;
+            t.item.name = e.name;
+            t.item.sku = e.sku;
+            t.item.upc = e.upc;
+            t.item.inStock = e.dbQty;
+        }
+        targets.push_back(std::move(t));
+    }
+
     RepairDeskApi client = app.api();
 
-    struct Outcome { int ok = 0; int failed = 0; std::string firstError; };
+    struct Outcome {
+        int ok = 0;
+        int failed = 0;
+        std::string firstError;
+        std::vector<std::pair<long long, int>> updatedQuantities;
+    };
     Async::run(
-        [client, entries] {
+        [client, targets] {
             Outcome out;
-            for (const ScanEntry& e : entries) {
-                json fields;
-                fields["name"] = e.name;
-                fields["in_stock"] = e.scanned;
-                ApiResult<json> r = client.updateInventoryItem(e.id, fields);
-                if (r.ok) out.ok++;
-                else {
+            for (const TargetEntry& t : targets) {
+                json payload = t.item.toUpdatePayload({{"in_stock", t.scanned}});
+                ApiResult<json> r = client.updateInventoryItem(t.item.id, payload);
+                if (r.ok) {
+                    out.ok++;
+                    out.updatedQuantities.push_back({t.item.id, t.scanned});
+                } else {
                     out.failed++;
                     if (out.firstError.empty()) out.firstError = r.message;
                 }
@@ -103,6 +137,16 @@ void applyToRepairDesk(App& app) {
         [&app](Outcome out) {
             StockTakeState& st = S();
             st.applying = false;
+            for (const auto& [id, newQty] : out.updatedQuantities) {
+                for (InventoryItem& it : app.inventory) {
+                    if (it.id == id) {
+                        it.inStock = newQty;
+                        it.fields["in_stock"] = std::to_string(newQty);
+                        if (it.raw.is_object()) it.raw["in_stock"] = newQty;
+                        break;
+                    }
+                }
+            }
             char buf[256];
             if (out.failed == 0) {
                 std::snprintf(buf, sizeof(buf), "Stock take submitted: %d item(s) updated.", out.ok);

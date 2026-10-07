@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <unordered_set>
 
 // ---------------------------------------------------------------------------
 // JSON helpers
@@ -126,6 +127,41 @@ InventoryItem InventoryItem::fromJson(const json& j) {
     std::snprintf(num, sizeof(num), "%.2f", item.costPrice);
     ensure("cost_price", num);
     return item;
+}
+
+json InventoryItem::toUpdatePayload(const json& overrides) const {
+    json body = raw.is_object() ? raw : json::object();
+    body["id"] = id;
+    if (!name.empty() || !body.contains("name")) body["name"] = name;
+    if (!sku.empty() || !body.contains("sku")) body["sku"] = sku;
+    if (!upc.empty() || !body.contains("upc_code")) body["upc_code"] = upc;
+    if (!category.empty() || !body.contains("item_type")) body["item_type"] = category;
+    if (!manufacturer.empty() || !body.contains("manufacturer")) body["manufacturer"] = manufacturer;
+    if (!device.empty() || !body.contains("device")) body["device"] = device;
+    if (price != 0.0 || !body.contains("price")) body["price"] = price;
+    if (costPrice != 0.0 || !body.contains("cost_price")) body["cost_price"] = costPrice;
+    body["in_stock"] = inStock;
+
+    static const char* extraKeys[] = {
+        "supplier", "condition", "physical_location", "description", "notes",
+        "reorder_level", "stock_warning", "minimum_price", "tax_class",
+        "tax_inclusive", "valuation_method", "is_serialize"
+    };
+    for (const char* k : extraKeys) {
+        if (!body.contains(k) || body[k].is_null()) {
+            auto it = fields.find(k);
+            if (it != fields.end() && !it->second.empty()) {
+                body[k] = it->second;
+            }
+        }
+    }
+
+    if (overrides.is_object()) {
+        for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+            body[it.key()] = it.value();
+        }
+    }
+    return body;
 }
 
 static const json* findFirstArray(const json& j, int depth) {
@@ -326,15 +362,71 @@ ApiResult<json> RepairDeskApi::send(const std::string& method, const std::string
                                   "application/json", authHeaders()));
 }
 
-ApiResult<std::vector<InventoryItem>> RepairDeskApi::listInventory(const std::string& keyword, int pageSize) const {
-    auto raw = get("/inventory", {{"pagesize", std::to_string(pageSize)}, {"keyword", keyword}});
+ApiResult<std::vector<InventoryItem>> RepairDeskApi::listInventory(const std::string& keyword, int maxItems, int pageSize) const {
     ApiResult<std::vector<InventoryItem>> out;
-    out.ok = raw.ok;
-    out.status = raw.status;
-    out.message = raw.message;
-    if (raw.ok) {
-        for (const json& j : extractList(raw.value)) out.value.push_back(InventoryItem::fromJson(j));
+    out.ok = true;
+    out.status = 200;
+    out.message = "OK";
+
+    if (pageSize <= 0) pageSize = 100;
+    std::unordered_set<long long> seenIds;
+    int page = 1;
+    const int maxPages = 2000;
+
+    while (page <= maxPages) {
+        std::vector<std::pair<std::string, std::string>> query = {
+            {"page", std::to_string(page)},
+            {"pagesize", std::to_string(pageSize)}
+        };
+        if (!keyword.empty()) {
+            query.push_back({"keyword", keyword});
+        }
+
+        auto raw = get("/inventory", query);
+        if (!raw.ok) {
+            if (page == 1) {
+                out.ok = false;
+                out.status = raw.status;
+                out.message = raw.message;
+                return out;
+            }
+            break;
+        }
+
+        std::vector<json> items = extractList(raw.value);
+        if (items.empty()) {
+            break;
+        }
+
+        size_t newItemsCount = 0;
+        for (const json& j : items) {
+            InventoryItem item = InventoryItem::fromJson(j);
+            if (item.id != 0) {
+                if (seenIds.count(item.id)) continue;
+                seenIds.insert(item.id);
+            }
+            out.value.push_back(std::move(item));
+            newItemsCount++;
+            if (maxItems > 0 && (int)out.value.size() >= maxItems) {
+                break;
+            }
+        }
+
+        if (maxItems > 0 && (int)out.value.size() >= maxItems) {
+            break;
+        }
+
+        if (newItemsCount == 0) {
+            break;
+        }
+
+        if ((int)items.size() < pageSize && (int)items.size() < 100) {
+            break;
+        }
+
+        page++;
     }
+
     return out;
 }
 

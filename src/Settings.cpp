@@ -50,6 +50,7 @@ void Settings::load() {
         baseUrl = j.value("baseUrl", baseUrl);
         darkTheme = j.value("darkTheme", darkTheme);
         inventoryPageSize = j.value("inventoryPageSize", inventoryPageSize);
+        if (inventoryPageSize == 1000) inventoryPageSize = 0; // migrate legacy 1000 default to unlimited
         if (j.contains("accent") && j["accent"].is_array() && j["accent"].size() == 3) {
             for (int i = 0; i < 3; ++i) accent[i] = j["accent"][i].get<float>();
         }

@@ -40,6 +40,7 @@ struct InventoryItem {
     FlatRecord fields;     // flattened record for the table
 
     static InventoryItem fromJson(const json& j);
+    json toUpdatePayload(const json& overrides = json::object()) const;
 };
 
 template <typename T>
@@ -77,7 +78,7 @@ public:
                                        const std::string& clientSecret, const std::string& token);
 
     // Inventory --------------------------------------------------------
-    ApiResult<std::vector<InventoryItem>> listInventory(const std::string& keyword, int pageSize) const;
+    ApiResult<std::vector<InventoryItem>> listInventory(const std::string& keyword = "", int maxItems = 0, int pageSize = 100) const;
     ApiResult<json> addInventoryItem(const json& fields) const;   // POST /inventory/addnewitem
     ApiResult<json> updateInventoryItem(long long id, const json& fields) const;
     ApiResult<json> deleteInventoryItem(long long id) const;

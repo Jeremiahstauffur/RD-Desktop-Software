@@ -203,15 +203,15 @@ void runBulkAction(App& app) {
                 if (action == BulkAction::Delete) {
                     r = client.deleteInventoryItem(it.id);
                 } else {
-                    json fields;
-                    fields["name"] = it.name;
+                    json overrides;
                     switch (action) {
-                        case BulkAction::EditCost: fields["cost_price"] = number; break;
-                        case BulkAction::EditPrice: fields["price"] = number; break;
-                        case BulkAction::EditQuantity: fields["in_stock"] = integer; break;
-                        case BulkAction::EditCategory: fields["item_type"] = text; break;
+                        case BulkAction::EditCost: overrides["cost_price"] = number; break;
+                        case BulkAction::EditPrice: overrides["price"] = number; break;
+                        case BulkAction::EditQuantity: overrides["in_stock"] = integer; break;
+                        case BulkAction::EditCategory: overrides["item_type"] = text; break;
                         default: break;
                     }
+                    json fields = it.toUpdatePayload(overrides);
                     r = client.updateInventoryItem(it.id, fields);
                 }
                 if (r.ok) {
@@ -252,18 +252,24 @@ json fieldValue(const std::string& key, const std::string& text) {
 
 // Applies an edit locally (so the UI reacts immediately) and sends it to RepairDesk.
 void saveFields(App& app, long long id, const json& fields, const std::string& what) {
+    json payload;
     for (InventoryItem& it : app.inventory) {
         if (it.id != id) continue;
         for (auto it2 = fields.begin(); it2 != fields.end(); ++it2) {
             it.raw[it2.key()] = it2.value();
         }
         it = InventoryItem::fromJson(it.raw);
+        payload = it.toUpdatePayload(fields);
         break;
     }
     S().viewDirty = true;
 
+    if (payload.is_null() || payload.empty()) {
+        payload = fields;
+    }
+
     RepairDeskApi client = app.api();
-    Async::run([client, id, fields] { return client.updateInventoryItem(id, fields); },
+    Async::run([client, id, payload] { return client.updateInventoryItem(id, payload); },
                [&app, what](ApiResult<json> r) {
                    S().productSaving = false;
                    if (r.ok) {

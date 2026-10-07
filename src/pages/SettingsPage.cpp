@@ -294,10 +294,10 @@ void settings(App& app) {
     // Data ---------------------------------------------------------------------
     if (ui::BeginCard("##data", ImVec2(cardW, 0))) {
         ui::Subtitle((std::string(icons::Package) + "  Data").c_str());
-        ui::Label("Inventory items to load per refresh (max 1000)");
+        ui::Label("Max inventory items to load (0 for all items)");
         int ps = app.settings.inventoryPageSize;
         if (ui::IntField("##pagesize", ps, 160 * dpi)) {
-            app.settings.inventoryPageSize = std::clamp(ps, 10, 1000);
+            app.settings.inventoryPageSize = std::max(0, ps);
             app.saveSettings();
         }
         ui::VerticalSpace(4 * dpi);
