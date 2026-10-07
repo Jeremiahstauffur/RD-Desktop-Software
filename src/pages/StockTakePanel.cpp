@@ -133,46 +133,19 @@ void applyToRepairDesk(App& app) {
                     out.updatedQuantities.push_back({t.item.id, t.scanned});
                     continue;
                 }
-                // RepairDesk does not accept an absolute quantity in PUT /inventory/{id}:
-                // a positive `in_stock` is added to the current stock, while a negative one
-                // has been observed to replace it (14 with -13 ends at -13, not 1). So the
-                // adjustment is sent, the item re-read, and the remaining difference sent
-                // again until the server reports exactly the scanned quantity.
-                int delta = t.change;
-                bool failed = false;
-                bool converged = false;
-                std::optional<InventoryItem> latest;
-                for (int attempt = 0; attempt < 4 && delta != 0; ++attempt) {
-                    json payload = t.item.toUpdatePayload({{"in_stock", delta}});
-                    ApiResult<json> r = client.updateInventoryItem(t.item.id, payload);
-                    if (!r.ok) {
-                        failed = true;
-                        if (out.firstError.empty()) out.firstError = r.message;
-                        break;
-                    }
-                    // Only the updated item is re-read; the rest of the list stays as it is.
-                    ApiResult<InventoryItem> fresh = client.getInventoryItem(t.item.id);
-                    if (!fresh.ok) break;   // cannot verify; assume the server applied the change
-                    latest = std::move(fresh.value);
-                    delta = t.scanned - latest->inStock;
-                    if (delta == 0) converged = true;
-                }
-                if (failed) {
-                    out.failed++;
-                    if (latest) out.refreshedFailed.push_back(std::move(*latest));
-                } else if (!latest) {
-                    out.ok++;
+                // PUT /inventory/{id} treats `in_stock` as an adjustment; saveInventoryItem
+                // lands the stock on the scanned quantity and re-reads the item to verify.
+                ApiResult<InventoryItem> r = client.saveInventoryItem(t.item.id, t.item.toUpdatePayload(), t.item.inStock, t.scanned);
+                if (r.ok && r.value.id == 0) {
+                    out.ok++;   // written but could not be re-read; assume the server applied it
                     out.updatedQuantities.push_back({t.item.id, t.scanned});
-                } else if (converged) {
+                } else if (r.ok) {
                     out.ok++;
-                    out.refreshed.push_back(std::move(*latest));
+                    out.refreshed.push_back(std::move(r.value));
                 } else {
                     out.failed++;
-                    if (out.firstError.empty()) {
-                        out.firstError = "\"" + t.item.name + "\" ended at " + std::to_string(latest->inStock) +
-                                         " instead of " + std::to_string(t.scanned) + ".";
-                    }
-                    out.refreshedFailed.push_back(std::move(*latest));
+                    if (out.firstError.empty()) out.firstError = "\"" + t.item.name + "\": " + r.message;
+                    if (r.value.id != 0) out.refreshedFailed.push_back(std::move(r.value));
                 }
             }
             return out;

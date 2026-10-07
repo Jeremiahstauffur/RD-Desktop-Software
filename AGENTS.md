@@ -40,7 +40,7 @@ src/
   App.h / App.cpp         Top-level application state, navigation rail, page routing, global search bar.
   Pages.h                 Declarations of every page/panel draw function.
   pages/ListPage.h        Shared paged/searchable list scaffolding used by Tickets/Invoices/Customers.
-  pages/InventoryPage.cpp Inventory table, column chooser, bulk actions, product page.
+  pages/InventoryPage.cpp Inventory table, column chooser, bulk actions, product page (suggest drop-downs, price pill + formula popup).
   pages/StockTakePanel.cpp Right-hand stock-take sidebar (SKU → UPC → name matching, Submit).
   pages/PosPage.cpp       Product grid, barcode entry, cart, invoice creation.
   pages/TicketsPage.cpp / InvoicesPage.cpp / CustomersPage.cpp  Paged lists → RecordViewer.
@@ -49,11 +49,13 @@ src/
   pages/SearchPage.cpp    Global search results across products/invoices/tickets/customers.
   pages/SettingsPage.cpp  API key / OAuth2 credentials, theme, accent colour.
   DataTable.h/.cpp        Reusable ImGui table: column visibility, reorder, resize, sort, multi-select, click-to-edit.
-  Widgets.h/.cpp          Custom Win11-styled ImGui widgets (buttons, inputs, toggles, etc.).
+  Widgets.h/.cpp          Custom Win11-styled ImGui widgets (buttons, inputs, toggles, SuggestField/ComboField, PillButton).
   Theme.h/.cpp            Dark/light theme + accent colour application.
-  Settings.h/.cpp         Load/save settings.json (including OAuth tokens).
+  Settings.h/.cpp         Load/save settings.json (OAuth tokens, suggested-price formula `suggestedPrice()`).
   Http.h/.cpp             WinHTTP wrapper (GET/POST/PUT/DELETE, headers, query params).
-  RepairDeskApi.h/.cpp    Typed wrappers over the RepairDesk Public API; OAuth2 token exchange/refresh.
+  RepairDeskApi.h/.cpp    Typed wrappers over the RepairDesk Public API; OAuth2 token exchange/refresh;
+                          `Lookups` reference data (manufacturers/devices/suppliers/tax classes/locations) and
+                          `resolveLookupIds()` which turns UI names into the ids the write endpoints need.
   Async.h                 Helpers for running API calls off the UI thread and polling results per frame.
 ```
 
@@ -75,6 +77,10 @@ src/
 - Authentication: prefer `Authorization: Bearer <token>` (OAuth2). Fall back to the `api_key` query
   parameter only when no OAuth token exists. Token refresh is automatic — don't duplicate it in pages.
 - Nothing in **Stock take** writes to RepairDesk until **Submit** is pressed. Preserve this.
+- Inventory writes go through `RepairDeskApi::addInventoryItem` / `updateInventoryItem`, which run the body
+  through `resolveLookupIds()` using `App::lookups` (set via `api()`). Pages pass *names* for manufacturer,
+  device, supplier, tax class and location; never hand-build id mappings in a page. Pass a `WriteNotes`
+  and surface its `messages` to the user (dropped unknown values, created brands/models).
 - Colours/sizes come from `Theme.*`; do not hard-code accent colours in pages.
 - Adding a new page: declare in `Pages.h`, implement in `src/pages/`, register in `App.cpp`
   navigation, and add the `.cpp` to `CMakeLists.txt`.
@@ -103,6 +109,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-07 | Product editor: Category/Manufacturer/Device/Supplier/Condition/Physical location became `ui::SuggestField`s (inventory values + `Lookups` from `/devices`, `/purchaseorders`, `/inventory/additionalinfo`; free text still allowed), Valuation method (`kValuationMethods`, FIFO default) and Tax class (`/taxclasses`) became fixed `ui::ComboField`s, price pill (`Settings::suggestedPrice`, `round(cost×2 to 0.20)−0.05`, USD) with pencil → formula popup persisted in settings. Create-product 500 fixed: `addInventoryItem` always sends `tax_inclusive`; `toResult` copies the body `statusCode`. Unknown manufacturers/devices are created via `/createbrand`/`/createmodel`; unknown locations are dropped with a warning. | Done (user verified create + UI) |
 | 2026-10-07 | Stock take decreases ended at the negative change (14 → scanned 1 gave −13): a negative `in_stock` replaces the stock instead of adjusting it. `applyToRepairDesk` now loops (≤4 rounds): send delta → re-read via `getInventoryItem` → send `scanned − actual` until the server reports the scanned quantity; a non-converging item is reported as failed ("ended at X instead of Y") and stays in the sidebar with its `dbQty` refreshed. | Done (awaiting user re-test against live API) |
 | 2026-10-07 | Stock take submit sent the scanned count as `in_stock`, but RepairDesk applies `in_stock` in `PUT /inventory/{id}` as a *change* (adjustment), so stock was being added instead of set. `StockTakePanel.cpp` now sends `scanned − dbQty` (`TargetEntry::change`), skips items with change 0, and the Submit tooltip/README say "adjusts by the change". | Done (awaiting user re-test against live API) |
 | 2026-10-07 | OAuth token exchange: `tokenRequest` now unwraps RepairDesk's `{success, statusCode, message, data}` envelope (tokens and `error`/`error_description`/`hint` live in `data`, HTTP is always 200), `finishOAuthWithCode` accepts a full redirect URL, token-exchange failures get a redirect-URI/credentials hint, loopback landing page no longer claims "connected" before the exchange; README gained an OAuth troubleshooting section. | Done (awaiting user re-test with real credentials) |
@@ -116,6 +123,11 @@ Newest entries first. One line per task: date, what changed, status.
       `Settings` round-tripping (these don't need a window).
 - [ ] Document known RepairDesk API quirks (pagination parameters, rate limits, field names) in
       §5 as they are discovered.
+- [ ] `valuation_method` is accepted by `POST /inventory/addnewitem` but never persisted (tested 1/2/3 and
+      the strings FIFO/LIFO/WAC — the web UI shows "none" every time). The dropdown is kept so the payload
+      is ready once RepairDesk fixes it; re-test occasionally.
+- [ ] Suppliers are harvested from `/purchaseorders` (no supplier listing endpoint); a store with no POs
+      gets an empty supplier list and typed suppliers are dropped with a warning.
 - [ ] Inventory bulk actions and inline edits (`InventoryPage.cpp`) still call `app.refreshInventory()`
       after saving; switch them to the per-item `getInventoryItem` + `replaceInventoryItem` path used by
       the stock take.
@@ -172,6 +184,21 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
 - **`GET /inventory?keyword=<id>` fetches a single item.** The keyword filter matches id, name and SKU,
   so filter the result by exact id (`RepairDeskApi::getInventoryItem`). Use it to refresh individual
   rows after an update rather than re-downloading the whole inventory.
+- **`POST /inventory/addnewitem` needs `tax_inclusive`.** Without it the server answers
+  `{"success":false,"statusCode":500,"message":"Internal Server Error"}` *inside an HTTP 200* for any
+  otherwise valid body; with `tax_inclusive: 0` the same body succeeds. `addInventoryItem` adds it.
+  Bisect such 500s with a PowerShell script that adds one field at a time to a minimal body
+  (`name, sku, in_stock, cost_price, price`), reading `success` from the JSON — not the HTTP status —
+  and deleting each created item (`DELETE /inventory/{id}` works even though it is undocumented).
+- **Write endpoints want ids, the list returns names.** `manufacturer`, `device`, `supplier`, `tax_class`
+  must be integers; `physical_location` must exactly match a name from `/inventory/additionalinfo`
+  (HTTP 400 otherwise); `condition` and `item_type` accept free text. Manufacturer/device lists come
+  from `GET /devices` (`company`/`manufacturer_id` + `id`/`name`); there is no supplier listing, so
+  `Lookups` harvests `supplier`/`vendorID` from `/purchaseorders`. `/createbrand` and `/createmodel`
+  (`manufacturerId`) create missing references and answer 409 with the existing record on duplicates.
+- **`ImGui::BeginCombo` cannot hold free text.** For "pick or type" fields use `ui::SuggestField`
+  (InputText + a separate `ImGui::Begin` window positioned under the field, state in
+  `ImGui::GetStateStorage()`); using a popup would steal focus from the text input on every keystroke.
 - **A running `RD_Desktop_Software.exe` blocks linking** (`LNK1168: cannot open ... for writing`).
   Close the app before building, or link into a scratch dir with
   `-DFETCHCONTENT_SOURCE_DIR_IMGUI=<build>\_deps\imgui-src -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=<build>\_deps\nlohmann_json-src`
@@ -207,6 +234,10 @@ was ambiguous, record here what information would have helped.
   up with 8") so the semantics are unambiguous and other callers of the same field can be checked.
 - (2026-10-07) Report both directions of a quantity change (increase *and* decrease) when testing; the
   `in_stock` fix for increases looked complete until a decrease showed asymmetric server behaviour.
+- (2026-10-07) For "server error" bugs say up front whether the agent may create (and delete) clearly
+  named test records in the live store; bisecting the `addnewitem` 500 was only possible by sending
+  real requests. Also mention whether a formula/behaviour should be user-editable and where it should be
+  stored (settings vs. per product) — the price pill needed a follow-up question for that.
 
 ---
 

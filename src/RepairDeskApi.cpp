@@ -315,7 +315,6 @@ json InventoryItem::toUpdatePayload(const json& overrides) const {
     if (!sku.empty()) body["sku"] = sku;
     if (!upc.empty()) body["upc_code"] = upc;
     if (!category.empty()) body["item_type"] = category;
-    body["in_stock"] = inStock;
     body["price"] = price;
     body["cost_price"] = costPrice;
 
@@ -711,6 +710,61 @@ ApiResult<json> RepairDeskApi::updateInventoryItem(long long id, const json& fie
     json body = prepareWriteBody(fields, notes);
     body["id"] = id;
     return send("PUT", "/inventory/" + std::to_string(id), body);
+}
+
+// Observed behaviour of `in_stock` in PUT /inventory/{id} (2026-10-07):
+//   positive value  -> added to the current stock      (5 + 5 -> 10)
+//   zero / negative -> replaces the stock               (13, -2 -> -2; 0 -> 0)
+//   field absent    -> stock wiped (null)
+// So: going up sends the difference; going down (or unchanged) sends 0 and then
+// the target. The item is re-read and corrected until it reports the target.
+ApiResult<InventoryItem> RepairDeskApi::saveInventoryItem(long long id, const json& fields, int currentStock, int targetStock,
+                                                          WriteNotes* notes) const {
+    json body = prepareWriteBody(fields, notes);
+    body["id"] = id;
+    const std::string path = "/inventory/" + std::to_string(id);
+    auto put = [&](int inStock) {
+        json b = body;
+        b["in_stock"] = inStock;
+        return send("PUT", path, b);
+    };
+
+    ApiResult<InventoryItem> out;
+    int actual = currentStock;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        ApiResult<json> r;
+        if (targetStock > actual) {
+            r = put(targetStock - actual);
+        } else if (targetStock <= 0) {
+            r = put(targetStock);
+        } else {
+            r = put(0);
+            if (r.ok) r = put(targetStock);
+        }
+        if (!r.ok) {
+            out.ok = false;
+            out.status = r.status;
+            out.message = r.message;
+            return out;
+        }
+
+        ApiResult<InventoryItem> latest = getInventoryItem(id);
+        if (!latest.ok) {
+            out.ok = true;   // the write itself succeeded
+            out.status = r.status;
+            out.message = "Saved, but the item could not be re-read: " + latest.message;
+            return out;
+        }
+        actual = latest.value.inStock;
+        out = std::move(latest);
+        if (actual == targetStock) {
+            out.message = "OK";
+            return out;
+        }
+    }
+    out.ok = false;
+    out.message = "Saved, but the stock ended at " + std::to_string(actual) + " instead of " + std::to_string(targetStock) + ".";
+    return out;
 }
 
 // ---------------------------------------------------------------------------

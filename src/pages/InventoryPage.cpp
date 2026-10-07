@@ -100,8 +100,41 @@ std::string lower(std::string s) {
     return s;
 }
 
-bool contains(const std::string& hay, const std::string& needle) {
-    return lower(hay).find(needle) != std::string::npos;
+// Case-insensitive substring test without allocating (`needleLower` must already be lower-case).
+bool containsNoCase(const std::string& hay, const std::string& needleLower) {
+    if (needleLower.empty()) return true;
+    if (hay.size() < needleLower.size()) return false;
+    auto it = std::search(hay.begin(), hay.end(), needleLower.begin(), needleLower.end(),
+                          [](unsigned char a, unsigned char b) { return (char)std::tolower(a) == (char)b; });
+    return it != hay.end();
+}
+
+// Splits the search box text into lower-case terms; every term must match some field.
+std::vector<std::string> searchTerms(const std::string& text) {
+    std::vector<std::string> terms;
+    std::string cur;
+    for (unsigned char c : text) {
+        if (std::isspace(c)) {
+            if (!cur.empty()) { terms.push_back(cur); cur.clear(); }
+        } else {
+            cur.push_back((char)std::tolower(c));
+        }
+    }
+    if (!cur.empty()) terms.push_back(cur);
+    return terms;
+}
+
+// True when every term occurs in at least one field value of the record (any field,
+// including description, notes, location, tax class, nested values...).
+bool itemMatchesTerms(const InventoryItem& it, const std::vector<std::string>& terms) {
+    for (const std::string& term : terms) {
+        bool found = false;
+        for (const auto& [key, value] : it.fields) {
+            if (containsNoCase(value, term)) { found = true; break; }
+        }
+        if (!found) return false;
+    }
+    return true;
 }
 
 void setupColumns(DataTable& table) {
@@ -131,6 +164,12 @@ void setupColumns(DataTable& table) {
     });
 }
 
+// Shows the adjustments the API layer made to a write (dropped unknown names, created brands...).
+void reportWriteNotes(App& app, const WriteNotes& notes) {
+    for (const std::string& m : notes.messages) app.notify(m, ui::InfoKind::Warning);
+    if (notes.createdReferences) app.refreshLookups();
+}
+
 double toNumber(const std::string& s) {
     if (s.empty()) return 0.0;
     char* end = nullptr;
@@ -148,14 +187,9 @@ bool looksNumeric(const std::string& s) {
 void rebuildView(App& app) {
     InventoryState& s = S();
     s.view.clear();
-    std::string needle = lower(s.search);
+    const std::vector<std::string> terms = searchTerms(s.search);
     for (size_t i = 0; i < app.inventory.size(); ++i) {
-        const InventoryItem& it = app.inventory[i];
-        if (!needle.empty() && !(contains(it.name, needle) || contains(it.sku, needle) || contains(it.upc, needle) ||
-                                 contains(it.category, needle) || contains(it.manufacturer, needle) ||
-                                 contains(it.device, needle))) {
-            continue;
-        }
+        if (!terms.empty() && !itemMatchesTerms(app.inventory[i], terms)) continue;
         s.view.push_back((int)i);
     }
 
@@ -214,26 +248,31 @@ void runBulkAction(App& app) {
         [client, targets, action, number, integer, text] {
             BulkOutcome out;
             for (const InventoryItem& it : targets) {
-                ApiResult<json> r;
+                bool ok;
+                std::string message;
                 if (action == BulkAction::Delete) {
-                    r = client.deleteInventoryItem(it.id);
+                    ApiResult<json> r = client.deleteInventoryItem(it.id);
+                    ok = r.ok;
+                    message = r.message;
                 } else {
                     json overrides;
+                    int targetStock = it.inStock;
                     switch (action) {
                         case BulkAction::EditCost: overrides["cost_price"] = number; break;
                         case BulkAction::EditPrice: overrides["price"] = number; break;
-                        case BulkAction::EditQuantity: overrides["in_stock"] = integer; break;
+                        case BulkAction::EditQuantity: targetStock = integer; break;
                         case BulkAction::EditCategory: overrides["item_type"] = text; break;
                         default: break;
                     }
-                    json fields = it.toUpdatePayload(overrides);
-                    r = client.updateInventoryItem(it.id, fields);
+                    ApiResult<InventoryItem> r = client.saveInventoryItem(it.id, it.toUpdatePayload(overrides), it.inStock, targetStock);
+                    ok = r.ok;
+                    message = r.message;
                 }
-                if (r.ok) {
+                if (ok) {
                     out.succeeded++;
                 } else {
                     out.failed++;
-                    if (out.firstError.empty()) out.firstError = r.message;
+                    if (out.firstError.empty()) out.firstError = message;
                 }
             }
             return out;
@@ -266,34 +305,47 @@ json fieldValue(const std::string& key, const std::string& text) {
 }
 
 // Applies an edit locally (so the UI reacts immediately) and sends it to RepairDesk.
+// `fields` may contain `in_stock` as the *new absolute quantity*; the API layer turns
+// it into the adjustment RepairDesk expects and keeps the stock unchanged otherwise.
 void saveFields(App& app, long long id, const json& fields, const std::string& what) {
     json payload;
+    int currentStock = 0;
+    int targetStock = 0;
     for (InventoryItem& it : app.inventory) {
         if (it.id != id) continue;
+        currentStock = it.inStock;
         for (auto it2 = fields.begin(); it2 != fields.end(); ++it2) {
             it.raw[it2.key()] = it2.value();
         }
         it = InventoryItem::fromJson(it.raw);
+        targetStock = it.inStock;
         payload = it.toUpdatePayload(fields);
         break;
     }
     S().viewDirty = true;
-
-    if (payload.is_null() || payload.empty()) {
-        payload = fields;
-    }
+    if (payload.is_null() || payload.empty()) return;
+    payload.erase("in_stock");
 
     RepairDeskApi client = app.api();
-    Async::run([client, id, payload] { return client.updateInventoryItem(id, payload); },
-               [&app, what](ApiResult<json> r) {
-                   S().productSaving = false;
-                   if (r.ok) {
-                       app.notify(what + " saved.", ui::InfoKind::Success);
-                   } else {
-                       app.notify(what + " failed: " + r.message, ui::InfoKind::Error);
-                       app.refreshInventory(S().serverKeyword);
-                   }
-               });
+    Async::run(
+        [client, id, payload, currentStock, targetStock] {
+            std::pair<ApiResult<InventoryItem>, WriteNotes> out;
+            out.second.createMissing = true;
+            out.first = client.saveInventoryItem(id, payload, currentStock, targetStock, &out.second);
+            return out;
+        },
+        [&app, what](std::pair<ApiResult<InventoryItem>, WriteNotes> out) {
+            S().productSaving = false;
+            reportWriteNotes(app, out.second);
+            const ApiResult<InventoryItem>& r = out.first;
+            if (r.ok) {
+                app.notify(what + " saved.", ui::InfoKind::Success);
+            } else {
+                app.notify(what + " failed: " + r.message, ui::InfoKind::Error);
+            }
+            if (r.value.id != 0) app.replaceInventoryItem(r.value);
+            else app.refreshInventory(S().serverKeyword);
+        });
 }
 
 void saveSingleField(App& app, const InventoryItem& item, const std::string& key, const std::string& text) {
@@ -442,12 +494,6 @@ json editorFields(const App& app, const InventoryState::Editor& e) {
     return fields;
 }
 
-// Shows the adjustments the API layer made to a write (dropped unknown names, created brands...).
-void reportWriteNotes(App& app, const WriteNotes& notes) {
-    for (const std::string& m : notes.messages) app.notify(m, ui::InfoKind::Warning);
-    if (notes.createdReferences) app.refreshLookups();
-}
-
 void saveEditor(App& app, InventoryState& s, const InventoryItem& it) {
     InventoryState::Editor& e = s.editor;
     json fields = editorFields(app, e);
@@ -460,39 +506,7 @@ void saveEditor(App& app, InventoryState& s, const InventoryItem& it) {
     }
     s.productSaving = true;
     e.dirty = false;
-
-    // Apply locally for immediate feedback, then send the merged payload.
-    json payload;
-    for (InventoryItem& item : app.inventory) {
-        if (item.id != it.id) continue;
-        for (auto i = fields.begin(); i != fields.end(); ++i) item.raw[i.key()] = i.value();
-        item = InventoryItem::fromJson(item.raw);
-        payload = item.toUpdatePayload(fields);
-        break;
-    }
-    s.viewDirty = true;
-    if (payload.is_null() || payload.empty()) payload = fields;
-
-    const std::string what = "Product \"" + e.name + "\"";
-    const long long id = it.id;
-    RepairDeskApi client = app.api();
-    Async::run(
-        [client, id, payload] {
-            std::pair<ApiResult<json>, WriteNotes> out;
-            out.second.createMissing = true;
-            out.first = client.updateInventoryItem(id, payload, &out.second);
-            return out;
-        },
-        [&app, what](std::pair<ApiResult<json>, WriteNotes> out) {
-            S().productSaving = false;
-            reportWriteNotes(app, out.second);
-            if (out.first.ok) {
-                app.notify(what + " saved.", ui::InfoKind::Success);
-            } else {
-                app.notify(what + " failed: " + out.first.message, ui::InfoKind::Error);
-            }
-            app.refreshInventory(S().serverKeyword);
-        });
+    saveFields(app, it.id, fields, "Product \"" + e.name + "\"");
 }
 
 void startNewProduct(App& app, InventoryState& s) {
@@ -979,10 +993,14 @@ void inventory(App& app) {
         // Toolbar row
         ImGui::BeginGroup();
         float searchW = 320.0f * dpi;
-        if (ui::SearchField("invSearch", s.search, "Search name, SKU, UPC, category...", searchW)) {
-            // Enter pressed: also ask the server (keyword works on id, name and SKU)
-            s.serverKeyword = s.search;
-            app.refreshInventory(s.serverKeyword);
+        if (ui::SearchField("invSearch", s.search, "Search any field (name, SKU, description...)", searchW)) {
+            // Enter pressed. Filtering is local across every field; the server keyword
+            // (which only matches id, name and SKU) is used only when the inventory is
+            // capped in Settings and therefore not fully loaded.
+            if (app.settings.inventoryPageSize > 0) {
+                s.serverKeyword = s.search;
+                app.refreshInventory(s.serverKeyword);
+            }
         }
         ImGui::SameLine();
         if (ui::Button((std::string(icons::Refresh) + "  Refresh").c_str())) {

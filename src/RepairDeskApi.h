@@ -98,7 +98,9 @@ struct InventoryItem {
     static InventoryItem fromJson(const json& j);
     // Complete PUT body for this item (RepairDesk wipes every field that is not
     // sent). Lookup fields are emitted as names where the record has them and
-    // must be run through resolveLookupIds() before sending.
+    // must be run through resolveLookupIds() before sending. `in_stock` is NOT
+    // included: RepairDesk treats it as an adjustment (see saveInventoryItem), so
+    // callers must add it explicitly or use RepairDeskApi::saveInventoryItem.
     json toUpdatePayload(const json& overrides = json::object()) const;
 };
 
@@ -156,7 +158,14 @@ public:
     // Both write methods run the body through resolveLookupIds() (and, when
     // notes->createMissing is set, createMissingReferences()) before sending.
     ApiResult<json> addInventoryItem(const json& fields, WriteNotes* notes = nullptr) const;   // POST /inventory/addnewitem
+    // Low-level PUT. `fields` must contain `in_stock` (absent = stock wiped; positive = added
+    // to the current stock; zero/negative = stock replaced). Prefer saveInventoryItem.
     ApiResult<json> updateInventoryItem(long long id, const json& fields, WriteNotes* notes = nullptr) const;
+    // Writes `fields` (a toUpdatePayload body) and leaves the item's stock at exactly
+    // `targetStock`, working around the adjustment semantics of `in_stock`. The item
+    // is re-read afterwards and returned (value.id == 0 when the re-read failed).
+    ApiResult<InventoryItem> saveInventoryItem(long long id, const json& fields, int currentStock, int targetStock,
+                                               WriteNotes* notes = nullptr) const;
     ApiResult<json> deleteInventoryItem(long long id) const;
 
     // Reference data -----------------------------------------------------
