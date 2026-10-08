@@ -17,6 +17,7 @@ A Windows 11–styled desktop client for the [RepairDesk](https://www.repairdesk
 | JSON | nlohmann/json `v3.12.0` (header only, fetched by CMake) |
 | Networking | WinHTTP (built in, no external SDK) |
 | Build | CMake ≥ 3.24 + Ninja; CLion bundled MinGW works out of the box |
+| Installer | Inno Setup 6 via `package.bat` → `dist\RD_Desktop_Software-<ver>-setup.exe` |
 | Settings | `%APPDATA%\RD Desktop Software\settings.json` |
 
 Build with one click via `build.bat` (auto-detects CLion's bundled CMake/Ninja/MinGW, then PATH, then
@@ -35,6 +36,8 @@ The first configure requires internet access (FetchContent downloads ImGui + jso
 ```
 CMakeLists.txt            Single target: RD_Desktop_Software (WIN32 exe). New .cpp files MUST be added here.
 build.bat                 One-click build script (toolchain discovery, configure + build into build\, optional run).
+package.bat               build.bat + Inno Setup -> dist\RD_Desktop_Software-<ver>-setup.exe (installs Inno Setup via winget if missing).
+installer/RD_Desktop_Software.iss  Inno Setup script (per-user default, Start menu + optional desktop shortcut, uninstaller).
 README.md                 User-facing docs: building, OAuth/API-key setup, feature list.
 AGENTS.md                 This file.
 src/
@@ -98,7 +101,9 @@ src/
   `cmake --build build` (or `cmake-build-debug` from CLion).
 - For UI changes, run the exe and exercise the affected page manually. Describe what you checked in
   your summary.
-- Don't commit `cmake-build-*`/`build` directories or `settings.json`.
+- Don't commit `cmake-build-*`/`build`/`dist` directories or `settings.json`.
+- Installer changes: run `package.bat nobuild`, then test with
+  `setup.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER /DIR=<scratch>` and `unins000.exe /VERYSILENT`.
 
 ### Documentation
 - When user-visible behaviour changes, update `README.md` (Features / Connecting sections).
@@ -112,6 +117,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-08 | Real installer: `installer\RD_Desktop_Software.iss` (Inno Setup 6; per-user default with all-users option, Start menu + optional desktop shortcut, uninstaller that offers to delete `%APPDATA%\RD Desktop Software`, `CloseApplications`) and `package.bat` (runs `build.bat`, finds/installs ISCC via winget, `<version>`/`nobuild` args, output `dist\RD_Desktop_Software-<ver>-setup.exe`). `dist/` git-ignored; README "Creating an installer" section. | Done (verified: silent install → files + Start menu shortcut, silent uninstall → clean, settings kept) |
 | 2026-10-08 | Added `build.bat`: double-clickable one-step build. Finds CLion's bundled CMake/Ninja/MinGW (`%LOCALAPPDATA%\Programs\CLion\bin`), falls back to PATH tools, then Visual Studio via `vswhere` + `VsDevCmd.bat`; reconfigures `build\` if its cache was made with another compiler; `run`/`debug`/`clean` args; pauses only when double-clicked (no args). README Building section documents it. | Done (verified: full build + no-op rebuild with bundled MinGW) |
 | 2026-10-07 | Product save made the quantity climb: every PUT sent the full `in_stock`, which RepairDesk *adds*. Live-probed the exact semantics (positive = add, 0/negative = replace, absent = wiped to null) and centralised the fix in `RepairDeskApi::saveInventoryItem(id, fields, currentStock, targetStock)` (send → re-read → correct, ≤3 rounds); `toUpdatePayload` no longer emits `in_stock`; product page, inline cell edits, bulk edits and the stock take all use it and swap the re-read item in via `replaceInventoryItem`. Inventory search now filters live across every flattened field (description, notes, …), all space-separated terms must match; Enter only triggers the server keyword when the inventory load is capped. | Done (user verified quantity + search) |
 | 2026-10-07 | Product editor: Category/Manufacturer/Device/Supplier/Condition/Physical location became `ui::SuggestField`s (inventory values + `Lookups` from `/devices`, `/purchaseorders`, `/inventory/additionalinfo`; free text still allowed), Valuation method (`kValuationMethods`, FIFO default) and Tax class (`/taxclasses`) became fixed `ui::ComboField`s, price pill (`Settings::suggestedPrice`, `round(cost×2 to 0.20)−0.05`, USD) with pencil → formula popup persisted in settings. Create-product 500 fixed: `addInventoryItem` always sends `tax_inclusive`; `toResult` copies the body `statusCode`. Unknown manufacturers/devices are created via `/createbrand`/`/createmodel`; unknown locations are dropped with a warning. | Done (user verified create + UI) |
@@ -213,6 +219,10 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   so `build.bat` keeps the bare compiler name in `COMPILER` and builds `-DCMAKE_CXX_COMPILER=` from it.
   When testing a batch file that ends in `pause` from a non-interactive shell, run it as
   `cmd /c 'build.bat release < nul'` so `pause` returns immediately.
+- **Inno Setup `/SUPPRESSMSGBOXES` does not silence `MsgBox` in `[Code]`.** A custom prompt in the
+  uninstaller hung a silent uninstall; guard such prompts with `not UninstallSilent` (or
+  `WizardSilent` in the installer). Inno Setup installed via winget lands in
+  `%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`, not `Program Files (x86)`.
 
 ## 6. Prompt wishes
 
@@ -253,6 +263,9 @@ was ambiguous, record here what information would have helped.
 - (2026-10-08) "Create an exe to build the software" was taken to mean a double-clickable build script
   (`build.bat`), since a compiled launcher would itself need a compiler. Say explicitly if a real `.exe`
   (e.g. a self-extracting package or an installer) is wanted instead.
+- (2026-10-08) For installer requests, state whether installing a packaging tool (Inno Setup via winget)
+  on the dev machine is acceptable, whether the installer should be per-user or per-machine, and which
+  version number/branding (publisher, icon) to use; defaults chosen were per-user, `1.0.0`, no icon.
 
 ---
 

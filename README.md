@@ -28,6 +28,20 @@ build\RD_Desktop_Software.exe
 
 The first configure downloads Dear ImGui and nlohmann/json, so an internet connection is needed once.
 
+## Creating an installer
+
+Double-click `package.bat` (or run `package.bat 1.2.0` to set the version). It runs `build.bat`, then
+compiles `installer\RD_Desktop_Software.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+into `dist\RD_Desktop_Software-<version>-setup.exe`. If Inno Setup is not installed the script installs
+it for the current user via `winget install JRSoftware.InnoSetup`. `package.bat nobuild` skips the build
+and packages the existing `build\RD_Desktop_Software.exe`.
+
+The setup wizard installs per user by default (no administrator prompt; "all users" can be chosen),
+adds a Start menu entry, an optional desktop shortcut and an uninstaller (Settings → Apps). The app is
+a single statically linked exe, so nothing else is installed. Uninstalling asks whether to also delete
+`%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
+`RD_Desktop_Software-1.0.0-setup.exe /VERYSILENT /CURRENTUSER`.
+
 ## Connecting to RepairDesk
 
 Open **Settings** (bottom of the navigation rail). Two authentication methods are supported, matching
