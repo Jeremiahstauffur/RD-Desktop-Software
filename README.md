@@ -8,8 +8,9 @@ downloaded automatically by CMake, and networking uses the built-in WinHTTP libr
 
 A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.0.0-setup.exe`. It
 installs per user by default (no administrator prompt; "all users" can be chosen), adds a Start menu
-entry, an optional desktop shortcut and an uninstaller (Settings → Apps). The app needs no other
-software: the MinGW runtime (`libwinpthread-1.dll`) is included next to the exe. Uninstalling asks
+entry, an optional desktop shortcut (both with the RepairDesk icon, which the app also shows in the
+taskbar and title bar) and an uninstaller (Settings → Apps). The app needs no other software: the MinGW
+runtime (`libwinpthread-1.dll`) is included next to the exe. Uninstalling asks
 whether to also delete `%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
 `RD_Desktop_Software-1.0.0-setup.exe /VERYSILENT /CURRENTUSER`.
 
@@ -45,7 +46,10 @@ The first configure downloads Dear ImGui and nlohmann/json, so an internet conne
 
 Double-click `package.bat` (or run `package.bat 1.2.0` to set the version). It runs `build.bat`, then
 compiles `installer\RD_Desktop_Software.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php)
-into `dist\RD_Desktop_Software-<version>-setup.exe` (the exe, `libwinpthread-1.dll` and this README).
+into `dist\RD_Desktop_Software-<version>-setup.exe` (the exe, `libwinpthread-1.dll`, `RDicon.ico` and this
+README). The icon comes from `RDicon.png` in the project root; after replacing that file run
+`powershell -ExecutionPolicy Bypass -File tools\make_icon.ps1` to regenerate `installer\RDicon.ico`, which
+is compiled into the exe (`src\app.rc`) and used by the setup wizard and the shortcuts.
 If Inno Setup is not installed the script installs it for the current user via
 `winget install JRSoftware.InnoSetup`. `package.bat nobuild` skips the build and packages the existing
 `build\RD_Desktop_Software.exe`. The `dist\` folder is intentionally **not** git-ignored so the

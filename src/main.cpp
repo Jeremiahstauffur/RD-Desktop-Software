@@ -18,6 +18,7 @@
 #include "App.h"
 #include "Settings.h"
 #include "Theme.h"
+#include "resource.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -122,7 +123,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APPICON));
+    wc.hIconSm = wc.hIcon;
     wc.lpszClassName = L"RDDesktopSoftware";
     RegisterClassExW(&wc);
 

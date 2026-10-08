@@ -37,12 +37,16 @@ The first configure requires internet access (FetchContent downloads ImGui + jso
 CMakeLists.txt            Single target: RD_Desktop_Software (WIN32 exe). New .cpp files MUST be added here.
 build.bat                 One-click build script (toolchain discovery, configure + build into build\, optional run).
 package.bat               build.bat + Inno Setup -> dist\RD_Desktop_Software-<ver>-setup.exe (installs Inno Setup via winget if missing).
-installer/RD_Desktop_Software.iss  Inno Setup script (per-user default, Start menu + optional desktop shortcut, uninstaller; ships exe + *.dll next to it).
+installer/RD_Desktop_Software.iss  Inno Setup script (per-user default, Start menu + optional desktop shortcut, uninstaller; ships exe + *.dll + RDicon.ico).
+installer/RDicon.ico      App icon (generated from RDicon.png by tools\make_icon.ps1); embedded via src/app.rc, SetupIconFile, shortcut IconFilename.
+RDicon.png                Icon source image (51x53). Replace it and re-run tools\make_icon.ps1 to change the icon.
+tools/make_icon.ps1       PNG -> multi-size PNG-compressed .ico (System.Drawing, no external tool).
 dist/                     Ready-made installer, committed to git on purpose. Re-run package.bat after code changes.
 README.md                 User-facing docs: building, OAuth/API-key setup, feature list.
 AGENTS.md                 This file.
 src/
-  main.cpp                Win32 window + DX11 device/swap chain, ImGui backend init, main loop.
+  main.cpp                Win32 window + DX11 device/swap chain, ImGui backend init, main loop; window class icon = IDI_APPICON.
+  app.rc / resource.h     Windows resources: IDI_APPICON (app icon). Added to the CMake target (project LANGUAGES CXX RC).
   App.h / App.cpp         Top-level application state, navigation rail, page routing, global search bar.
   Pages.h                 Declarations of every page/panel draw function.
   pages/ListPage.h        Shared paged/searchable list scaffolding used by Tickets/Invoices/Customers.
@@ -122,6 +126,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-08 | App icon from `RDicon.png`: `tools\make_icon.ps1` pads to square and writes `installer\RDicon.ico` (16–256 px, PNG entries); `src\app.rc` + `resource.h` embed it (CMake `LANGUAGES CXX RC`), `main.cpp` sets `hIcon`/`hIconSm` so taskbar + title bar show it; `.iss` gained `SetupIconFile`, ships `RDicon.ico` and uses it as `IconFilename` for Start menu/desktop shortcuts. `dist\` installer rebuilt. | Done (verified: exe/setup icon extract OK, silent install → shortcuts point at `{app}\RDicon.ico`, uninstall clean) |
 | 2026-10-08 | Installer committed + `libwinpthread-1.dll` fix: `dist/` removed from `.gitignore` so the setup exe ships with the repo (README "Installing (no build needed)"); CMake copies `libwinpthread-1.dll` from the compiler's dir next to the exe post-build and the `.iss` packages `*.dll` beside the exe. Static linking of winpthread was tried (`-static`, `-Bstatic -lpthread`, `-mcrtdll=ucrt`) and fails with CLion's bundled MinGW 15.2 — see §5. | Done (verified: installed app starts with `PATH` reduced to System32; uninstall clean) |
 | 2026-10-08 | Real installer: `installer\RD_Desktop_Software.iss` (Inno Setup 6; per-user default with all-users option, Start menu + optional desktop shortcut, uninstaller that offers to delete `%APPDATA%\RD Desktop Software`, `CloseApplications`) and `package.bat` (runs `build.bat`, finds/installs ISCC via winget, `<version>`/`nobuild` args, output `dist\RD_Desktop_Software-<ver>-setup.exe`). `dist/` git-ignored; README "Creating an installer" section. | Done (verified: silent install → files + Start menu shortcut, silent uninstall → clean, settings kept) |
 | 2026-10-08 | Added `build.bat`: double-clickable one-step build. Finds CLion's bundled CMake/Ninja/MinGW (`%LOCALAPPDATA%\Programs\CLion\bin`), falls back to PATH tools, then Visual Studio via `vswhere` + `VsDevCmd.bat`; reconfigures `build\` if its cache was made with another compiler; `run`/`debug`/`clean` args; pauses only when double-clicked (no args). README Building section documents it. | Done (verified: full build + no-op rebuild with bundled MinGW) |
@@ -231,6 +236,10 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   so `build.bat` keeps the bare compiler name in `COMPILER` and builds `-DCMAKE_CXX_COMPILER=` from it.
   When testing a batch file that ends in `pause` from a non-interactive shell, run it as
   `cmd /c 'build.bat release < nul'` so `pause` returns immediately.
+- **Icon pipeline.** `windres` resolves the `ICON "..."` path in `app.rc` relative to the `.rc` file
+  (`../installer/RDicon.ico`). The resource id must be `#include`d in `main.cpp` (`resource.h`) — a missing
+  include is a plain compile error. The source PNG is tiny (51×53) and not square; `make_icon.ps1` pads
+  it and upsamples the larger sizes, so expect some blur at 128/256 px until a bigger `RDicon.png` exists.
 - **Inno Setup `/SUPPRESSMSGBOXES` does not silence `MsgBox` in `[Code]`.** A custom prompt in the
   uninstaller hung a silent uninstall; guard such prompts with `not UninstallSilent` (or
   `WizardSilent` in the installer). Inno Setup installed via winget lands in
@@ -282,6 +291,9 @@ was ambiguous, record here what information would have helped.
   another PC without CLion) — it decides between shipping the DLL and changing link flags. "The exe
   should be present in the repository" was taken to mean committing the installer in `dist\` (not the
   raw `build\` exe); say so if the bare exe should be committed as well.
+- (2026-10-08) For icon requests, supply a square image of at least 256×256 px (or an `.ico`); the given
+  51×53 PNG had to be padded and upscaled. Also say whether only the installer/shortcuts or also the
+  running window (taskbar/title bar) should use it — here both were done.
 
 ---
 

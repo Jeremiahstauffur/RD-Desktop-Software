@@ -1,0 +1,4 @@
+// Application icon (taskbar, Explorer, shortcuts). Generated from RDicon.png by tools\make_icon.ps1.
+#include "resource.h"
+
+IDI_APPICON ICON "../installer/RDicon.ico"

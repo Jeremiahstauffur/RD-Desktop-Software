@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(RD_Desktop_Software LANGUAGES CXX)
+project(RD_Desktop_Software LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,6 +69,7 @@ add_executable(RD_Desktop_Software WIN32
         src/pages/SettingsPage.cpp
         src/pages/SearchPage.cpp
         src/pages/RecordViewer.cpp
+        src/app.rc
 )
 target_include_directories(RD_Desktop_Software PRIVATE src)
 target_compile_definitions(RD_Desktop_Software PRIVATE
