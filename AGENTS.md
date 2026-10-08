@@ -109,6 +109,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-07 | Product save made the quantity climb: every PUT sent the full `in_stock`, which RepairDesk *adds*. Live-probed the exact semantics (positive = add, 0/negative = replace, absent = wiped to null) and centralised the fix in `RepairDeskApi::saveInventoryItem(id, fields, currentStock, targetStock)` (send → re-read → correct, ≤3 rounds); `toUpdatePayload` no longer emits `in_stock`; product page, inline cell edits, bulk edits and the stock take all use it and swap the re-read item in via `replaceInventoryItem`. Inventory search now filters live across every flattened field (description, notes, …), all space-separated terms must match; Enter only triggers the server keyword when the inventory load is capped. | Done (user verified quantity + search) |
 | 2026-10-07 | Product editor: Category/Manufacturer/Device/Supplier/Condition/Physical location became `ui::SuggestField`s (inventory values + `Lookups` from `/devices`, `/purchaseorders`, `/inventory/additionalinfo`; free text still allowed), Valuation method (`kValuationMethods`, FIFO default) and Tax class (`/taxclasses`) became fixed `ui::ComboField`s, price pill (`Settings::suggestedPrice`, `round(cost×2 to 0.20)−0.05`, USD) with pencil → formula popup persisted in settings. Create-product 500 fixed: `addInventoryItem` always sends `tax_inclusive`; `toResult` copies the body `statusCode`. Unknown manufacturers/devices are created via `/createbrand`/`/createmodel`; unknown locations are dropped with a warning. | Done (user verified create + UI) |
 | 2026-10-07 | Stock take decreases ended at the negative change (14 → scanned 1 gave −13): a negative `in_stock` replaces the stock instead of adjusting it. `applyToRepairDesk` now loops (≤4 rounds): send delta → re-read via `getInventoryItem` → send `scanned − actual` until the server reports the scanned quantity; a non-converging item is reported as failed ("ended at X instead of Y") and stays in the sidebar with its `dbQty` refreshed. | Done (awaiting user re-test against live API) |
 | 2026-10-07 | Stock take submit sent the scanned count as `in_stock`, but RepairDesk applies `in_stock` in `PUT /inventory/{id}` as a *change* (adjustment), so stock was being added instead of set. `StockTakePanel.cpp` now sends `scanned − dbQty` (`TargetEntry::change`), skips items with change 0, and the Submit tooltip/README say "adjusts by the change". | Done (awaiting user re-test against live API) |
@@ -128,12 +129,11 @@ Newest entries first. One line per task: date, what changed, status.
       is ready once RepairDesk fixes it; re-test occasionally.
 - [ ] Suppliers are harvested from `/purchaseorders` (no supplier listing endpoint); a store with no POs
       gets an empty supplier list and typed suppliers are dropped with a warning.
-- [ ] Inventory bulk actions and inline edits (`InventoryPage.cpp`) still call `app.refreshInventory()`
-      after saving; switch them to the per-item `getInventoryItem` + `replaceInventoryItem` path used by
-      the stock take.
-- [ ] Bulk "Edit quantity", inline `in_stock` edits and the product page (`InventoryPage.cpp`) still send
-      the typed value as `in_stock`; since the API treats it as an adjustment they must be converted to
-      `new − current` (or relabelled as "adjust by") the same way the stock take now does.
+- [x] Inventory inline/product-page edits use the per-item `saveInventoryItem` + `replaceInventoryItem`
+      path; bulk actions still finish with a full `refreshInventory()` (2026-10-07; acceptable because
+      many rows change at once).
+- [x] Bulk "Edit quantity", inline `in_stock` edits and the product page now go through
+      `saveInventoryItem`, which converts the absolute quantity into RepairDesk's adjustment. (2026-10-07)
 - [x] Add a short "Troubleshooting" section to `README.md` (OAuth redirect issues, firewall prompts
       for the loopback listener on port 8731). (2026-10-07)
 - [ ] Loopback listener (`http::waitForLoopbackRedirect`) accepts a single IPv4 connection and has no
@@ -174,13 +174,14 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   `InventoryItem::toUpdatePayload`, which whitelists the documented fields and collapses reference
   objects to ids. The spec lives at <https://api-docs.repairdesk.co/rd-unresolved-swagger.json>
   (components → schemas → `Item`) — fetch it instead of guessing field names.
-- **`in_stock` in `PUT /inventory/{id}` is neither a value nor a clean delta.** A *positive* value is
-  added to the current stock (1 + 4 → 5); a *negative* value has been observed to replace the stock
-  (14 with −13 → −13). There is no dedicated stock-adjustment endpoint in the Swagger spec. The only
-  reliable way to reach an exact quantity is send → re-read (`getInventoryItem`) → send the remaining
-  difference, as `applyToRepairDesk` in `StockTakePanel.cpp` does (a decrease takes two PUTs: the
-  negative one lands at `−n`, the following positive one adds `scanned + n`). Skip the request when the
-  change is 0.
+- **`in_stock` in `PUT /inventory/{id}` is neither a value nor a clean delta.** Probed on a throw-away
+  item (2026-10-07): *positive* value → added to the current stock (5 + 5 → 10, 10 + 3 → 13); *zero or
+  negative* → replaces the stock (13, −2 → −2; 0 → 0); *field absent* → stock wiped to `null`. There is
+  no stock-adjustment endpoint. **Always** write stock through `RepairDeskApi::saveInventoryItem`
+  (going up sends the difference, going down/unchanged sends 0 then the target, then re-reads via
+  `getInventoryItem` and corrects). `toUpdatePayload` deliberately omits `in_stock` so a caller cannot
+  accidentally "add" the current quantity; never call `updateInventoryItem` directly with a body that
+  lacks it.
 - **`GET /inventory?keyword=<id>` fetches a single item.** The keyword filter matches id, name and SKU,
   so filter the result by exact id (`RepairDeskApi::getInventoryItem`). Use it to refresh individual
   rows after an update rather than re-downloading the whole inventory.
@@ -234,6 +235,9 @@ was ambiguous, record here what information would have helped.
   up with 8") so the semantics are unambiguous and other callers of the same field can be checked.
 - (2026-10-07) Report both directions of a quantity change (increase *and* decrease) when testing; the
   `in_stock` fix for increases looked complete until a decrease showed asymmetric server behaviour.
+- (2026-10-07) When a save "adds instead of edits", give one concrete example (field changed, quantity
+  before, quantity after) — "5 became 10 after saving the description" immediately points at `in_stock`
+  being echoed and saves a round of guessing.
 - (2026-10-07) For "server error" bugs say up front whether the agent may create (and delete) clearly
   named test records in the live store; bisecting the `addnewitem` 500 was only possible by sending
   real requests. Also mention whether a formula/behaviour should be user-editable and where it should be

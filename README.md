@@ -65,7 +65,10 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
   SKU, UPC and description at the top. While the inventory refreshes, a thin accent-coloured progress
   bar runs along the top edge of the window: it reaches the right edge once as many items as the
   previous load have arrived; any additional items extend it as a dotted segment on the right, in
-  proportion to the previous total.
+  proportion to the previous total. The search box filters live across *every* field of every loaded
+  product (description, notes, location, tax class…); multiple words must all match. Saving a product
+  (page, inline cell or bulk edit) leaves the quantity exactly as shown – the app compensates for
+  RepairDesk's API, which otherwise adds the sent quantity to the stock.
 - **Product editor** – Category, Manufacturer, Device, Supplier, Condition and Physical location are
   drop-downs filled with the values already used in your inventory (plus RepairDesk's device, supplier and
   location lists); you can still type a new value. New manufacturers/devices are created in RepairDesk on
