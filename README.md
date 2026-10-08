@@ -6,7 +6,18 @@ downloaded automatically by CMake, and networking uses the built-in WinHTTP libr
 
 ## Building
 
-Open the folder in CLion (bundled MinGW + Ninja work out of the box) and build the
+**One click:** double-click `build.bat` in the project folder. It finds CLion's bundled CMake, Ninja
+and MinGW automatically (falling back to tools on `PATH` or an installed Visual Studio), builds a
+Release configuration into `build\` and prints the path of `RD_Desktop_Software.exe`. From a terminal:
+
+```
+build.bat          Release build
+build.bat run      build, then start the app
+build.bat debug    Debug build
+build.bat clean    wipe build\ and rebuild from scratch
+```
+
+Alternatively, open the folder in CLion (bundled MinGW + Ninja work out of the box) and build the
 `RD_Desktop_Software` target, or from a terminal:
 
 ```

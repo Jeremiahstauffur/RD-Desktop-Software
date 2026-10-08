@@ -19,7 +19,8 @@ A Windows 11–styled desktop client for the [RepairDesk](https://www.repairdesk
 | Build | CMake ≥ 3.24 + Ninja; CLion bundled MinGW works out of the box |
 | Settings | `%APPDATA%\RD Desktop Software\settings.json` |
 
-Build from a terminal:
+Build with one click via `build.bat` (auto-detects CLion's bundled CMake/Ninja/MinGW, then PATH, then
+Visual Studio; `run`/`debug`/`clean` arguments), or from a terminal:
 
 ```
 cmake -S . -B build -G Ninja
@@ -33,6 +34,7 @@ The first configure requires internet access (FetchContent downloads ImGui + jso
 
 ```
 CMakeLists.txt            Single target: RD_Desktop_Software (WIN32 exe). New .cpp files MUST be added here.
+build.bat                 One-click build script (toolchain discovery, configure + build into build\, optional run).
 README.md                 User-facing docs: building, OAuth/API-key setup, feature list.
 AGENTS.md                 This file.
 src/
@@ -92,6 +94,7 @@ src/
 
 ### Verification
 - There is no automated test suite yet. At minimum, verify a change compiles:
+  `build.bat release` (non-interactive; builds into `build\` with the bundled MinGW) or
   `cmake --build build` (or `cmake-build-debug` from CLion).
 - For UI changes, run the exe and exercise the affected page manually. Describe what you checked in
   your summary.
@@ -109,6 +112,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-08 | Added `build.bat`: double-clickable one-step build. Finds CLion's bundled CMake/Ninja/MinGW (`%LOCALAPPDATA%\Programs\CLion\bin`), falls back to PATH tools, then Visual Studio via `vswhere` + `VsDevCmd.bat`; reconfigures `build\` if its cache was made with another compiler; `run`/`debug`/`clean` args; pauses only when double-clicked (no args). README Building section documents it. | Done (verified: full build + no-op rebuild with bundled MinGW) |
 | 2026-10-07 | Product save made the quantity climb: every PUT sent the full `in_stock`, which RepairDesk *adds*. Live-probed the exact semantics (positive = add, 0/negative = replace, absent = wiped to null) and centralised the fix in `RepairDeskApi::saveInventoryItem(id, fields, currentStock, targetStock)` (send → re-read → correct, ≤3 rounds); `toUpdatePayload` no longer emits `in_stock`; product page, inline cell edits, bulk edits and the stock take all use it and swap the re-read item in via `replaceInventoryItem`. Inventory search now filters live across every flattened field (description, notes, …), all space-separated terms must match; Enter only triggers the server keyword when the inventory load is capped. | Done (user verified quantity + search) |
 | 2026-10-07 | Product editor: Category/Manufacturer/Device/Supplier/Condition/Physical location became `ui::SuggestField`s (inventory values + `Lookups` from `/devices`, `/purchaseorders`, `/inventory/additionalinfo`; free text still allowed), Valuation method (`kValuationMethods`, FIFO default) and Tax class (`/taxclasses`) became fixed `ui::ComboField`s, price pill (`Settings::suggestedPrice`, `round(cost×2 to 0.20)−0.05`, USD) with pencil → formula popup persisted in settings. Create-product 500 fixed: `addInventoryItem` always sends `tax_inclusive`; `toResult` copies the body `statusCode`. Unknown manufacturers/devices are created via `/createbrand`/`/createmodel`; unknown locations are dropped with a warning. | Done (user verified create + UI) |
 | 2026-10-07 | Stock take decreases ended at the negative change (14 → scanned 1 gave −13): a negative `in_stock` replaces the stock instead of adjusting it. `applyToRepairDesk` now loops (≤4 rounds): send delta → re-read via `getInventoryItem` → send `scanned − actual` until the server reports the scanned quantity; a non-converging item is reported as failed ("ended at X instead of Y") and stays in the sidebar with its `dbQty` refreshed. | Done (awaiting user re-test against live API) |
@@ -205,6 +209,10 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   `-DFETCHCONTENT_SOURCE_DIR_IMGUI=<build>\_deps\imgui-src -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=<build>\_deps\nlohmann_json-src`
   to reuse the downloaded deps offline. `cmake-build-debug` is configured for MSVC via CLion's bundled
   CMake, so from a plain terminal run it inside `VsDevCmd.bat -arch=x64`.
+- **`cmd` variable substring replacement can't contain `=`.** `%VAR:-Dkey=value=%` stops at the first `=`,
+  so `build.bat` keeps the bare compiler name in `COMPILER` and builds `-DCMAKE_CXX_COMPILER=` from it.
+  When testing a batch file that ends in `pause` from a non-interactive shell, run it as
+  `cmd /c 'build.bat release < nul'` so `pause` returns immediately.
 
 ## 6. Prompt wishes
 
@@ -242,6 +250,9 @@ was ambiguous, record here what information would have helped.
   named test records in the live store; bisecting the `addnewitem` 500 was only possible by sending
   real requests. Also mention whether a formula/behaviour should be user-editable and where it should be
   stored (settings vs. per product) — the price pill needed a follow-up question for that.
+- (2026-10-08) "Create an exe to build the software" was taken to mean a double-clickable build script
+  (`build.bat`), since a compiled launcher would itself need a compiler. Say explicitly if a real `.exe`
+  (e.g. a self-extracting package or an installer) is wanted instead.
 
 ---
 
