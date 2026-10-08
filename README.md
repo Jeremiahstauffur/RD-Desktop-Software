@@ -4,11 +4,24 @@ A Windows 11–styled desktop client for [RepairDesk](https://www.repairdesk.co/
 Win32 + DirectX 11 and Dear ImGui. No external SDKs are required: Dear ImGui and nlohmann/json are
 downloaded automatically by CMake, and networking uses the built-in WinHTTP library.
 
+## Installing (no build needed)
+
+A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.0.0-setup.exe`. It
+installs per user by default (no administrator prompt; "all users" can be chosen), adds a Start menu
+entry, an optional desktop shortcut and an uninstaller (Settings → Apps). The app needs no other
+software: the MinGW runtime (`libwinpthread-1.dll`) is included next to the exe. Uninstalling asks
+whether to also delete `%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
+`RD_Desktop_Software-1.0.0-setup.exe /VERYSILENT /CURRENTUSER`.
+
+Building from source is only needed to change the code; after a change, run `package.bat` to refresh
+the installer in `dist\` and commit it together with the source.
+
 ## Building
 
 **One click:** double-click `build.bat` in the project folder. It finds CLion's bundled CMake, Ninja
 and MinGW automatically (falling back to tools on `PATH` or an installed Visual Studio), builds a
-Release configuration into `build\` and prints the path of `RD_Desktop_Software.exe`. From a terminal:
+Release configuration into `build\` (exe plus `libwinpthread-1.dll`) and prints the path of
+`RD_Desktop_Software.exe`. From a terminal:
 
 ```
 build.bat          Release build
@@ -28,19 +41,15 @@ build\RD_Desktop_Software.exe
 
 The first configure downloads Dear ImGui and nlohmann/json, so an internet connection is needed once.
 
-## Creating an installer
+## Rebuilding the installer
 
 Double-click `package.bat` (or run `package.bat 1.2.0` to set the version). It runs `build.bat`, then
 compiles `installer\RD_Desktop_Software.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php)
-into `dist\RD_Desktop_Software-<version>-setup.exe`. If Inno Setup is not installed the script installs
-it for the current user via `winget install JRSoftware.InnoSetup`. `package.bat nobuild` skips the build
-and packages the existing `build\RD_Desktop_Software.exe`.
-
-The setup wizard installs per user by default (no administrator prompt; "all users" can be chosen),
-adds a Start menu entry, an optional desktop shortcut and an uninstaller (Settings → Apps). The app is
-a single statically linked exe, so nothing else is installed. Uninstalling asks whether to also delete
-`%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
-`RD_Desktop_Software-1.0.0-setup.exe /VERYSILENT /CURRENTUSER`.
+into `dist\RD_Desktop_Software-<version>-setup.exe` (the exe, `libwinpthread-1.dll` and this README).
+If Inno Setup is not installed the script installs it for the current user via
+`winget install JRSoftware.InnoSetup`. `package.bat nobuild` skips the build and packages the existing
+`build\RD_Desktop_Software.exe`. The `dist\` folder is intentionally **not** git-ignored so the
+installer is always available to anyone who clones the repository.
 
 ## Connecting to RepairDesk
 

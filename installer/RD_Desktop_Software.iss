@@ -11,6 +11,7 @@
 #ifndef OutputDir
   #define OutputDir "..\dist"
 #endif
+#define SourceDir ExtractFilePath(SourceExe)
 
 #define AppName "RD Desktop Software"
 #define AppPublisher "RepairDesk Desktop"
@@ -49,6 +50,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; Flags: ignoreversion
+; MinGW runtime DLLs that build.bat places next to the exe (libwinpthread-1.dll).
+Source: "{#SourceDir}*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

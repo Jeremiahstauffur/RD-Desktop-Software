@@ -83,7 +83,18 @@ target_link_libraries(RD_Desktop_Software PRIVATE
         user32 gdi32 shell32 ole32 uuid winmm
 )
 if (MINGW)
-    # Static C++ runtime so the .exe runs on machines without MinGW installed.
-    target_link_options(RD_Desktop_Software PRIVATE -static-libgcc -static-libstdc++
-            -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic)
+    # Static libgcc/libstdc++ so the .exe runs on machines without MinGW installed. libwinpthread
+    # cannot be linked statically with CLion's bundled MinGW (its libpthread.a needs UCRT symbols
+    # while the toolchain targets msvcrt), so the DLL is copied next to the exe instead and
+    # shipped by the installer.
+    target_link_options(RD_Desktop_Software PRIVATE -static-libgcc -static-libstdc++)
+    get_filename_component(_mingw_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    find_file(WINPTHREAD_DLL libwinpthread-1.dll HINTS "${_mingw_bin}" NO_DEFAULT_PATH)
+    if (WINPTHREAD_DLL)
+        add_custom_command(TARGET RD_Desktop_Software POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${WINPTHREAD_DLL}" "$<TARGET_FILE_DIR:RD_Desktop_Software>"
+                COMMENT "Copying libwinpthread-1.dll next to the exe")
+    else ()
+        message(WARNING "libwinpthread-1.dll not found next to ${CMAKE_CXX_COMPILER}; the exe will need it at runtime.")
+    endif ()
 endif ()
