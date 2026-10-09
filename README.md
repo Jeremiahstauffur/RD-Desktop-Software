@@ -6,24 +6,47 @@ downloaded automatically by CMake, and networking uses the built-in WinHTTP libr
 
 ## Installing (no build needed)
 
-A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.1.0-setup.exe`. It
+A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.2.0-setup.exe`. It
 installs per user by default (no administrator prompt; "all users" can be chosen), adds a Start menu
 entry, an optional desktop shortcut (both with the RepairDesk icon, which the app also shows in the
 taskbar and title bar) and an uninstaller (Settings → Apps). The app needs no other software: the MinGW
 runtime (`libwinpthread-1.dll`) is included next to the exe. Uninstalling asks
 whether to also delete `%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
-`RD_Desktop_Software-1.1.0-setup.exe /VERYSILENT /CURRENTUSER`.
+`RD_Desktop_Software-1.2.0-setup.exe /VERYSILENT /CURRENTUSER`.
 
-**Updating:** download the new installer and run it. It detects an existing installation (per-user or
-all-users), updates it in place in the same folder with the same install mode and shortcut choices
-(the folder page is skipped and the summary page shows *Existing installation found: 1.0.0 → 1.1.0*), and
-replaces the Add/Remove Programs entry instead of adding a second one. Your preferences are kept: they
-live in `%APPDATA%\RD Desktop Software\settings.json`, which Setup never touches – accent colour,
-theme, font size, the column order/widths/visibility of every table, the API key / OAuth credentials
-and tokens. Close the app first (Setup asks if it is running).
+### Updating
+
+The app checks this GitHub repository for a newer version when it starts (a toast appears and a dot is
+shown next to **Settings** in the navigation rail) and whenever you press **Check for updates** in
+**Settings → Updates**, which also shows the installed version. When a newer version exists, Settings
+asks *Version x.y.z is available … Do you want to update now?* – **Update now** downloads the installer
+from the repository (progress bar, cancellable), verifies its size and SHA-256 against the published
+`dist\update.json`, and starts it; Setup closes the app, replaces the files in the existing install
+folder and starts the new version. **Later** hides the prompt until the next check. The automatic check
+at start-up can be switched off in the same card (`checkUpdatesOnStartup` in `settings.json`).
+
+You can also download the new installer by hand and run it. Either way the existing installation
+(per-user or all-users) is updated in place with the same install mode and shortcut choices (the
+folder page is skipped and the summary page shows *Existing installation found: 1.1.0 → 1.2.0*), and
+the Add/Remove Programs entry is replaced instead of a second one being added. Your preferences are
+kept: they live in `%APPDATA%\RD Desktop Software\settings.json`, which Setup never touches – accent
+colour, theme, font size, the column order/widths/visibility of every table, the API key / OAuth
+credentials and tokens.
+
+### Windows Defender / SmartScreen
+
+The installer and the app are **not code-signed** (a certificate costs money), so Windows SmartScreen
+may show *Windows protected your PC* for a freshly downloaded setup – click **More info → Run anyway**.
+Both executables carry full version information, a manifest and a modern Inno Setup build; the
+`RD_Desktop_Software-1.2.0-setup.exe` in `dist\` scans clean with Microsoft Defender. If Defender
+still quarantines a build on your machine, report it as a false positive at
+<https://www.microsoft.com/wdsi/filesubmission> (the definitions are usually updated within a day),
+or build from source. To sign a release yourself, set `RD_SIGN_PFX` / `RD_SIGN_PASSWORD` before
+running `package.bat` (see *Rebuilding the installer*).
 
 Building from source is only needed to change the code; after a change, run `package.bat` to refresh
-the installer in `dist\` and commit it together with the source.
+the installer and `update.json` in `dist\` and commit them together with the source – that is what
+makes installed copies offer the update.
 
 ## Building
 
@@ -50,18 +73,38 @@ build\RD_Desktop_Software.exe
 
 The first configure downloads Dear ImGui and nlohmann/json, so an internet connection is needed once.
 
-## Rebuilding the installer
+## Rebuilding the installer / publishing an update
 
-Double-click `package.bat` (or run `package.bat 1.2.0` to set the version). It runs `build.bat`, then
-compiles `installer\RD_Desktop_Software.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php)
-into `dist\RD_Desktop_Software-<version>-setup.exe` (the exe, `libwinpthread-1.dll`, `RDicon.ico` and this
-README). The icon comes from `RDicon.png` in the project root; after replacing that file run
-`powershell -ExecutionPolicy Bypass -File tools\make_icon.ps1` to regenerate `installer\RDicon.ico`, which
-is compiled into the exe (`src\app.rc`) and used by the setup wizard and the shortcuts.
-If Inno Setup is not installed the script installs it for the current user via
+The version number lives in `version.txt` (one line, e.g. `1.2.0`); CMake compiles it into the exe
+(version resource, *Installed version* in Settings) and the installer reads it too. To publish a
+release: bump the version (`package.bat 1.3.0` writes it for you), double-click `package.bat`, then
+commit `dist\` with the source and push. The script runs `build.bat`, compiles
+`installer\RD_Desktop_Software.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) into
+`dist\RD_Desktop_Software-<version>-setup.exe` (the exe, `libwinpthread-1.dll`, `RDicon.ico` and this
+README), deletes older installers from `dist\` and writes `dist\update.json`:
+
+```json
+{ "version": "1.2.0", "installer": "https://raw.githubusercontent.com/.../dist/RD_Desktop_Software-1.2.0-setup.exe",
+  "sha256": "...", "size": 3511208, "date": "2026-10-09" }
+```
+
+Installed apps fetch that file from the `master` branch (raw.githubusercontent.com caches for a few
+minutes, so a just-pushed update may take a moment to appear). The icon comes from `RDicon.png` in the
+project root; after replacing that file run `powershell -ExecutionPolicy Bypass -File tools\make_icon.ps1`
+to regenerate `installer\RDicon.ico`, which is compiled into the exe (`src\app.rc`) and used by the setup
+wizard and the shortcuts. If Inno Setup is not installed the script installs it for the current user via
 `winget install JRSoftware.InnoSetup`. `package.bat nobuild` skips the build and packages the existing
 `build\RD_Desktop_Software.exe`. The `dist\` folder is intentionally **not** git-ignored so the
 installer is always available to anyone who clones the repository.
+
+**Code signing (optional):** with a code-signing certificate, set `RD_SIGN_PFX=<path>.pfx`,
+`RD_SIGN_PASSWORD=<password>` (and optionally `RD_SIGN_TIMESTAMP`, default DigiCert) before running
+`package.bat`; the exe, the setup and its uninstaller are then signed with `signtool` from the Windows
+SDK, which removes the SmartScreen warning once the certificate has built reputation.
+
+To test the update flow without publishing, serve a folder containing `update.json` and the installer
+with any local web server and start the app with `RD_UPDATE_MANIFEST_URL=http://127.0.0.1:8765/update.json`
+in the environment; relative `installer` values are resolved against the manifest's location.
 
 ## Connecting to RepairDesk
 
@@ -147,3 +190,7 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
 - **Settings** – API key / OAuth2 credentials, dark/light theme, accent colour (presets and a full
   colour picker) applied to header text, buttons, lines and fills, and the default font size (11–24 px,
   default 15; headers, icons and table column widths scale with it; applied immediately).
+- **Updates** – Settings → Updates shows the installed version, checks the GitHub repository for a
+  newer release (automatically at start-up, or on demand) and, if one exists, asks whether to install
+  it: the installer is downloaded with a progress bar, verified (size + SHA-256) and run as an in-place
+  update that keeps every preference and restarts the app.

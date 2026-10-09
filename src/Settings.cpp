@@ -64,6 +64,7 @@ void Settings::load() {
         inventoryPageSize = j.value("inventoryPageSize", inventoryPageSize);
         if (inventoryPageSize == 1000) inventoryPageSize = 0; // migrate legacy 1000 default to unlimited
         inventoryLastCount = std::max(0, j.value("inventoryLastCount", inventoryLastCount));
+        checkUpdatesOnStartup = j.value("checkUpdatesOnStartup", checkUpdatesOnStartup);
         priceMultiplier = j.value("priceMultiplier", priceMultiplier);
         priceRoundTo = j.value("priceRoundTo", priceRoundTo);
         priceSubtract = j.value("priceSubtract", priceSubtract);
@@ -108,6 +109,7 @@ void Settings::save() const {
     j["fontSize"] = fontSize;
     j["inventoryPageSize"] = inventoryPageSize;
     j["inventoryLastCount"] = inventoryLastCount;
+    j["checkUpdatesOnStartup"] = checkUpdatesOnStartup;
     j["priceMultiplier"] = priceMultiplier;
     j["priceRoundTo"] = priceRoundTo;
     j["priceSubtract"] = priceSubtract;

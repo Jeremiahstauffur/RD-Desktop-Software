@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
-project(RD_Desktop_Software LANGUAGES CXX RC)
+
+# Single source of the version number: version.txt (read by package.bat and the installer too).
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" RD_VERSION LIMIT_COUNT 1)
+string(STRIP "${RD_VERSION}" RD_VERSION)
+project(RD_Desktop_Software VERSION ${RD_VERSION} LANGUAGES CXX RC)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS version.txt)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,9 +74,12 @@ add_executable(RD_Desktop_Software WIN32
         src/pages/SettingsPage.cpp
         src/pages/SearchPage.cpp
         src/pages/RecordViewer.cpp
+        src/Updater.cpp
         src/app.rc
 )
-target_include_directories(RD_Desktop_Software PRIVATE src)
+# version.h (RD_VERSION_*) for the code and the .rc VERSIONINFO block.
+configure_file(src/version.h.in "${CMAKE_BINARY_DIR}/generated/version.h" @ONLY)
+target_include_directories(RD_Desktop_Software PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 target_compile_definitions(RD_Desktop_Software PRIVATE
         UNICODE _UNICODE
         WIN32_LEAN_AND_MEAN
@@ -80,7 +88,7 @@ target_compile_definitions(RD_Desktop_Software PRIVATE
 target_link_libraries(RD_Desktop_Software PRIVATE
         imgui
         nlohmann_json
-        winhttp ws2_32
+        winhttp ws2_32 bcrypt
         user32 gdi32 shell32 ole32 uuid winmm
 )
 if (MINGW)

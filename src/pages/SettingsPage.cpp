@@ -10,8 +10,10 @@
 
 #include "App.h"
 #include "Async.h"
+#include "Http.h"
 #include "Pages.h"
 #include "Theme.h"
+#include "Updater.h"
 #include "Widgets.h"
 
 namespace {
@@ -58,6 +60,116 @@ void testConnection(App& app) {
                });
 }
 
+// "Updates" card: installed version, GitHub check, the update prompt and its progress.
+void drawUpdatesCard(App& app, float cardW) {
+    const Palette& P = Theme::get().palette();
+    const float dpi = app.dpiScale;
+    using State = App::UpdateState;
+
+    if (!ui::BeginCard("##updates", ImVec2(cardW, 0))) return;
+    ui::Subtitle((std::string(icons::Download) + "  Updates").c_str());
+    ui::VerticalSpace(4 * dpi);
+
+    const bool busy = app.updateState == State::Checking || app.updateState == State::Downloading ||
+                      app.updateState == State::Installing;
+    const float checkW = 190 * dpi;
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Installed version %s", updater::kCurrentVersion);
+    ImGui::SameLine();
+    ui::AlignRight(checkW);
+    ImGui::BeginDisabled(busy);
+    if (ui::Button((std::string(icons::Refresh) + "  Check for updates").c_str(), ImVec2(checkW, 0))) {
+        app.checkForUpdates(true);
+    }
+    ImGui::EndDisabled();
+
+    switch (app.updateState) {
+        case State::Idle:
+            ui::SecondaryText(("Updates are published at " + std::string(updater::kRepositoryUrl)).c_str());
+            break;
+        case State::Checking:
+            ui::Spinner("##updateSpin");
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ui::SecondaryText("Checking GitHub for a newer version...");
+            break;
+        case State::UpToDate:
+            ui::SecondaryText(app.updateStatus.c_str());
+            break;
+        case State::Failed:
+            ui::VerticalSpace(4 * dpi);
+            ui::InfoBar(ui::InfoKind::Warning, app.updateStatus);
+            break;
+        case State::Available: {
+            ui::VerticalSpace(4 * dpi);
+            std::string msg = "Version " + app.updateInfo.version + " is available";
+            if (!app.updateInfo.date.empty()) msg += " (released " + app.updateInfo.date;
+            if (app.updateInfo.size > 0) msg += (app.updateInfo.date.empty() ? " (" : ", ") + updater::formatBytes(app.updateInfo.size);
+            if (!app.updateInfo.date.empty() || app.updateInfo.size > 0) msg += ")";
+            msg += ". Do you want to update now? The installer replaces the app in place; your settings, "
+                   "accent colour, table layouts and RepairDesk credentials are kept.";
+            ui::InfoBar(ui::InfoKind::Info, msg);
+            if (!app.updateInfo.notes.empty()) {
+                ui::VerticalSpace(2 * dpi);
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                ui::SecondaryText(app.updateInfo.notes.c_str());
+                ImGui::PopTextWrapPos();
+            }
+            if (!app.updateError.empty()) {
+                ui::VerticalSpace(4 * dpi);
+                ui::InfoBar(ui::InfoKind::Error, app.updateError);
+            }
+            ui::VerticalSpace(6 * dpi);
+            if (ui::AccentButton((std::string(icons::Download) + "  Update now").c_str(), ImVec2(170 * dpi, 0))) {
+                app.startUpdate();
+            }
+            ImGui::SameLine();
+            if (ui::Button("Later", ImVec2(100 * dpi, 0))) {
+                app.updateDismissed = true;
+                app.updateState = State::UpToDate;
+                app.updateStatus = "Version " + app.updateInfo.version + " is available - press Check for updates when you are ready.";
+            }
+            ui::SecondaryText("The app closes while the files are replaced and opens again afterwards. "
+                              "Windows may ask for permission if the app was installed for all users.");
+            break;
+        }
+        case State::Downloading: {
+            ui::VerticalSpace(4 * dpi);
+            const unsigned long long got = app.updateReceived.load();
+            const unsigned long long total = app.updateInfo.size;
+            float fraction = total > 0 ? (float)std::min<unsigned long long>(got, total) / (float)total : 0.0f;
+            std::string label = total > 0 ? "Downloading " + updater::formatBytes(got) + " of " + updater::formatBytes(total)
+                                          : "Downloading " + updater::formatBytes(got);
+            const float cancelW = 100 * dpi;
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, P.accent);
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, P.control);
+            ImGui::ProgressBar(fraction, ImVec2(-cancelW - ImGui::GetStyle().ItemSpacing.x, 0), label.c_str());
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine();
+            if (ui::Button("Cancel", ImVec2(cancelW, 0))) app.cancelUpdate();
+            break;
+        }
+        case State::Installing:
+            ui::VerticalSpace(4 * dpi);
+            ui::InfoBar(ui::InfoKind::Info, "Setup is running. The app will close while version " + app.updateInfo.version +
+                                                " is installed and open again when it is done.");
+            break;
+    }
+
+    ui::VerticalSpace(8 * dpi);
+    ui::Divider();
+    ui::VerticalSpace(8 * dpi);
+    bool autoCheck = app.settings.checkUpdatesOnStartup;
+    if (ui::ToggleSwitch("Check for updates when the app starts", &autoCheck)) {
+        app.settings.checkUpdatesOnStartup = autoCheck;
+        app.saveSettings();
+    }
+    ImGui::SameLine();
+    ui::AlignRight(130 * dpi);
+    if (ui::SubtleButton("View on GitHub", ImVec2(130 * dpi, 0))) http::openInBrowser(updater::kRepositoryUrl);
+    ui::EndCard();
+}
+
 } // namespace
 
 namespace pages {
@@ -77,6 +189,10 @@ void settings(App& app) {
 
     ImGui::BeginChild("##settingsScroll", ImVec2(0, 0), ImGuiChildFlags_None);
     float cardW = std::min(ImGui::GetContentRegionAvail().x, 760.0f * dpi);
+
+    // Updates -------------------------------------------------------------------
+    drawUpdatesCard(app, cardW);
+    ui::VerticalSpace(8 * dpi);
 
     // RepairDesk connection ---------------------------------------------------
     if (ui::BeginCard("##connection", ImVec2(cardW, 0))) {

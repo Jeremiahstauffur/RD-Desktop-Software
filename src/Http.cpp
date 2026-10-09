@@ -7,7 +7,11 @@
 #include <shellapi.h>
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <vector>
+
+#include "version.h"
 
 namespace http {
 
@@ -33,27 +37,14 @@ struct HandleGuard {
     ~HandleGuard() { if (h) WinHttpCloseHandle(h); }
 };
 
-} // namespace
+// Receives the response body chunk by chunk; `total` is the Content-Length (0 = unknown).
+// Returning false aborts the transfer.
+using BodySink = std::function<bool(const char* data, size_t size, unsigned long long total)>;
 
-std::string urlEncode(const std::string& value) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    out.reserve(value.size() * 3);
-    for (unsigned char c : value) {
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-            c == '-' || c == '_' || c == '.' || c == '~') {
-            out.push_back((char)c);
-        } else {
-            out.push_back('%');
-            out.push_back(hex[c >> 4]);
-            out.push_back(hex[c & 15]);
-        }
-    }
-    return out;
-}
-
-Response request(const std::string& method, const std::string& url, const std::string& body,
-                 const std::string& contentType, const std::string& extraHeaders) {
+// Shared transport for request() and downloadToFile().
+Response perform(const std::string& method, const std::string& url, const std::string& body,
+                 const std::string& contentType, const std::string& extraHeaders, const std::string& accept,
+                 const BodySink& sink) {
     Response res;
 
     std::wstring wurl = widen(url);
@@ -71,7 +62,7 @@ Response request(const std::string& method, const std::string& url, const std::s
     }
 
     HandleGuard session;
-    session.h = WinHttpOpen(L"RD Desktop Software/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    session.h = WinHttpOpen(L"RD Desktop Software/" RD_VERSION_STRING, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session.h) {
         res.error = lastErrorText("WinHttpOpen");
@@ -95,7 +86,7 @@ Response request(const std::string& method, const std::string& url, const std::s
         return res;
     }
 
-    std::wstring headers = L"Accept: application/json\r\n";
+    std::wstring headers = L"Accept: " + widen(accept) + L"\r\n";
     if (!body.empty()) headers += L"Content-Type: " + widen(contentType) + L"\r\n";
     if (!extraHeaders.empty()) headers += widen(extraHeaders);
 
@@ -116,6 +107,16 @@ Response request(const std::string& method, const std::string& url, const std::s
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
     res.status = (int)status;
 
+    unsigned long long total = 0;
+    {
+        wchar_t lenBuf[32]{};
+        DWORD lenSize = sizeof(lenBuf);
+        if (WinHttpQueryHeaders(req.h, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, lenBuf, &lenSize,
+                                WINHTTP_NO_HEADER_INDEX)) {
+            total = std::wcstoull(lenBuf, nullptr, 10);
+        }
+    }
+
     for (;;) {
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(req.h, &available)) {
@@ -129,8 +130,78 @@ Response request(const std::string& method, const std::string& url, const std::s
             res.error = lastErrorText("WinHttpReadData");
             return res;
         }
-        res.body.append(chunk.data(), read);
+        if (!sink(chunk.data(), read, total)) {
+            res.error = "Cancelled";
+            return res;
+        }
     }
+    return res;
+}
+
+} // namespace
+
+std::string urlEncode(const std::string& value) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(value.size() * 3);
+    for (unsigned char c : value) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back((char)c);
+        } else {
+            out.push_back('%');
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 15]);
+        }
+    }
+    return out;
+}
+
+Response request(const std::string& method, const std::string& url, const std::string& body,
+                 const std::string& contentType, const std::string& extraHeaders) {
+    std::string collected;
+    Response res = perform(method, url, body, contentType, extraHeaders, "application/json",
+                           [&collected](const char* data, size_t size, unsigned long long) {
+                               collected.append(data, size);
+                               return true;
+                           });
+    res.body = std::move(collected);
+    return res;
+}
+
+Response downloadToFile(const std::string& url, const std::string& filePath, const DownloadProgress& progress) {
+    const std::filesystem::path target = std::filesystem::path(widen(filePath));
+    std::error_code ec;
+    std::filesystem::create_directories(target.parent_path(), ec);
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        Response res;
+        res.error = "Could not create " + filePath;
+        return res;
+    }
+
+    unsigned long long received = 0;
+    std::string errorBody;
+    bool writeFailed = false;
+    Response res = perform("GET", url, {}, {}, {}, "*/*",
+                           [&](const char* data, size_t size, unsigned long long total) {
+                               // The status is only known inside perform(); buffer error bodies instead
+                               // of writing them to the file (checked below via the status code).
+                               if (errorBody.size() < 64 * 1024) errorBody.append(data, size);
+                               out.write(data, (std::streamsize)size);
+                               if (!out) { writeFailed = true; return false; }
+                               received += size;
+                               return !progress || progress(received, total);
+                           });
+    out.close();
+
+    if (res.ok() && !writeFailed) {
+        res.body.clear();
+        return res;
+    }
+    std::filesystem::remove(target, ec);
+    if (writeFailed) res.error = "Could not write " + filePath + " (disk full?)";
+    if (!res.ok() && res.error.empty()) res.body = errorBody;
     return res;
 }
 

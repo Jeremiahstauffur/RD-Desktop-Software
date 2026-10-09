@@ -1,4 +1,41 @@
-// Application icon (taskbar, Explorer, shortcuts). Generated from RDicon.png by tools\make_icon.ps1.
+// Windows resources: application icon, manifest and version information.
+// Antivirus heuristics treat an exe without version info / manifest as suspicious, so
+// keep both in place. Version numbers come from version.txt via the generated version.h.
+#include <windows.h>
 #include "resource.h"
+#include "version.h"
 
+// Application icon (taskbar, Explorer, shortcuts). Generated from RDicon.png by tools\make_icon.ps1.
 IDI_APPICON ICON "../installer/RDicon.ico"
+
+// asInvoker (no elevation), Windows 10/11 compatible, per-monitor DPI aware.
+1 RT_MANIFEST "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION     RD_VERSION_MAJOR,RD_VERSION_MINOR,RD_VERSION_PATCH,0
+ PRODUCTVERSION  RD_VERSION_MAJOR,RD_VERSION_MINOR,RD_VERSION_PATCH,0
+ FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+ FILEFLAGS       0
+ FILEOS          VOS_NT_WINDOWS32
+ FILETYPE        VFT_APP
+ FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "RepairDesk Desktop"
+            VALUE "FileDescription",  "RD Desktop Software - desktop client for RepairDesk"
+            VALUE "FileVersion",      RD_VERSION_STRING
+            VALUE "InternalName",     "RD_Desktop_Software"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Jeremiah Stauffur"
+            VALUE "OriginalFilename", "RD_Desktop_Software.exe"
+            VALUE "ProductName",      "RD Desktop Software"
+            VALUE "ProductVersion",   RD_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

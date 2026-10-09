@@ -1,9 +1,13 @@
 ; Inno Setup script for RD Desktop Software.
 ; Built by package.bat (which passes the version and the path of the built exe);
 ; can also be compiled directly:  ISCC.exe installer\RD_Desktop_Software.iss
+; Optional code signing: package.bat defines SignToolName and registers the tool with /S.
 
 #ifndef AppVersion
-  #define AppVersion "1.1.0"
+  ; Fallback: read the version from version.txt (the single source, also used by CMake).
+  #define VersionFile FileOpen(AddBackslash(SourcePath) + "..\version.txt")
+  #define AppVersion Trim(FileRead(VersionFile))
+  #expr FileClose(VersionFile)
 #endif
 #ifndef SourceExe
   #define SourceExe "..\build\RD_Desktop_Software.exe"
@@ -16,6 +20,7 @@
 #define AppName "RD Desktop Software"
 #define AppPublisher "RepairDesk Desktop"
 #define AppExeName "RD_Desktop_Software.exe"
+#define AppURL "https://github.com/Jeremiahstauffur/RD-Desktop-Software"
 ; Must never change: it is how Setup recognises an existing installation to update.
 #define AppGuid "{6B1E2C4A-7D52-4D41-9C64-2F0A3B5E8D17}"
 #define UninstallKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\" + AppGuid + "_is1"
@@ -26,6 +31,17 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
+AppPublisherURL={#AppURL}
+AppSupportURL={#AppURL}
+AppUpdatesURL={#AppURL}
+AppCopyright=Copyright (C) 2026 Jeremiah Stauffur
+; Version resource of setup.exe: antivirus heuristics distrust installers without one.
+VersionInfoVersion={#AppVersion}
+VersionInfoCompany={#AppPublisher}
+VersionInfoDescription={#AppName} Setup
+VersionInfoProductName={#AppName}
+VersionInfoProductVersion={#AppVersion}
+VersionInfoCopyright=Copyright (C) 2026 Jeremiah Stauffur
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 SetupIconFile=RDicon.ico
@@ -51,6 +67,10 @@ MinVersion=10.0
 DisableProgramGroupPage=yes
 CloseApplications=yes
 RestartApplications=no
+#ifdef SignToolName
+SignTool={#SignToolName}
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -72,6 +92,9 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename:
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; In-app update: the app starts Setup with /SILENT /FROMAPP=1, Setup closes the app
+; (CloseApplications) and starts the new version when it is done.
+Filename: "{app}\{#AppExeName}"; Flags: nowait postinstall skipifnotsilent; Check: LaunchedFromApp
 
 [Code]
 // ---------------------------------------------------------------------------
@@ -93,6 +116,12 @@ end;
 function IsUpdate: Boolean;
 begin
   Result := PrevVersion <> '';
+end;
+
+// True when the running app started this Setup (see Updater.cpp).
+function LaunchedFromApp: Boolean;
+begin
+  Result := ExpandConstant('{param:FROMAPP|0}') = '1';
 end;
 
 function InitializeSetup: Boolean;

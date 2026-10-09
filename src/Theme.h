@@ -36,13 +36,14 @@ inline constexpr const char* Error        = "\xEE\xA8\xB9";   // U+EA39
 inline constexpr const char* People       = "\xEE\x9C\x96";   // U+E716
 inline constexpr const char* Back         = "\xEE\x9C\xAB";   // U+E72B
 inline constexpr const char* Contact      = "\xEE\x9D\xBB";   // U+E77B
+inline constexpr const char* Download     = "\xEE\xA2\x96";   // U+E896
 
 // Code points of every glyph above (used to build the font glyph ranges).
 inline constexpr unsigned short CodePoints[] = {
     0xE713, 0xE7B8, 0xE719, 0xE90F, 0xE8A5, 0xE8BD, 0xE72C, 0xE721, 0xED14, 0xE74D,
     0xE70F, 0xE73E, 0xE711, 0xE70D, 0xE76C, 0xE712, 0xE7BA, 0xE706, 0xE708, 0xE710,
     0xE738, 0xE74E, 0xE724, 0xE7BF, 0xE852, 0xE790, 0xE946, 0xEA39, 0xE76B, 0xE716,
-    0xE72B, 0xE77B,
+    0xE72B, 0xE77B, 0xE896,
 };
 }
 

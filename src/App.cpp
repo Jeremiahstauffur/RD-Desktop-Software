@@ -56,6 +56,12 @@ App::App(HWND hwnd, float dpi) : dpiScale(dpi), hwnd_(hwnd) {
     } else {
         refreshInventory();
     }
+    updater::cleanupDownloads();   // installer of a previous update, if any
+    if (settings.checkUpdatesOnStartup) checkForUpdates(false);
+}
+
+App::~App() {
+    if (updateProcess_) CloseHandle(updateProcess_);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +271,118 @@ void App::maintainOAuthToken() {
 }
 
 // ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+void App::checkForUpdates(bool manual) {
+    if (updateState == UpdateState::Checking || updateState == UpdateState::Downloading ||
+        updateState == UpdateState::Installing) {
+        return;
+    }
+    updateState = UpdateState::Checking;
+    updateStatus = "Checking for updates...";
+    updateError.clear();
+    Async::run([] { return updater::check(); },
+               [this, manual](updater::CheckResult r) {
+                   if (updateState != UpdateState::Checking) return;
+                   if (!r.ok) {
+                       updateState = UpdateState::Failed;
+                       updateStatus = "Could not check for updates: " + r.error;
+                       if (manual) notify(updateStatus, ui::InfoKind::Warning);
+                       return;
+                   }
+                   if (r.updateAvailable) {
+                       updateInfo = r.latest;
+                       updateState = UpdateState::Available;
+                       updateStatus = "Version " + updateInfo.version + " is available.";
+                       if (!manual && !updateDismissed) {
+                           notify("RD Desktop Software " + updateInfo.version +
+                                      " is available. Open Settings to install the update.",
+                                  ui::InfoKind::Info);
+                       }
+                   } else {
+                       updateState = UpdateState::UpToDate;
+                       if (updater::compareVersions(updater::kCurrentVersion, r.latest.version) > 0) {
+                           updateStatus = "You are running " + std::string(updater::kCurrentVersion) +
+                                          ", which is newer than the published " + r.latest.version + ".";
+                       } else {
+                           updateStatus = "You're up to date (checked at " + timeNow() + ").";
+                       }
+                       if (manual) notify(updateStatus, ui::InfoKind::Success);
+                   }
+               });
+}
+
+void App::startUpdate() {
+    if (updateState != UpdateState::Available) return;
+    updateState = UpdateState::Downloading;
+    updateError.clear();
+    updateReceived.store(0);
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    updateCancel_ = cancel;
+    const updater::UpdateInfo info = updateInfo;
+    std::atomic<unsigned long long>* received = &updateReceived;
+    Async::run([info, received, cancel] { return updater::download(info, received, cancel.get()); },
+               [this, cancel](updater::DownloadResult r) {
+                   if (updateState != UpdateState::Downloading || updateCancel_ != cancel) return;
+                   updateCancel_.reset();
+                   if (cancel->load()) {
+                       updateState = UpdateState::Available;
+                       return;
+                   }
+                   if (!r.ok) {
+                       updateState = UpdateState::Available;
+                       updateError = r.error;
+                       notify("Update: " + r.error, ui::InfoKind::Error);
+                       return;
+                   }
+                   saveSettings();   // everything Setup must preserve is on disk before it runs
+                   std::string err;
+                   updateProcess_ = updater::launchInstaller(r.path, err);
+                   if (!updateProcess_) {
+                       updateState = UpdateState::Available;
+                       updateError = "Could not start the installer: " + err + ".";
+                       notify(updateError, ui::InfoKind::Error);
+                       return;
+                   }
+                   updateState = UpdateState::Installing;
+                   updateStatus = "Installing version " + updateInfo.version + "...";
+               });
+}
+
+void App::cancelUpdate() {
+    if (updateState != UpdateState::Downloading || !updateCancel_) return;
+    updateCancel_->store(true);
+}
+
+// Setup closes this process itself while it replaces the files and starts the new
+// version afterwards, so normally this only ever sees the installer bail out early
+// (UAC declined, cancelled, failed) - in which case the app simply keeps running.
+void App::pollInstaller() {
+    if (updateState != UpdateState::Installing || !updateProcess_) return;
+    if (WaitForSingleObject(updateProcess_, 0) != WAIT_OBJECT_0) return;
+    DWORD code = 0;
+    GetExitCodeProcess(updateProcess_, &code);
+    CloseHandle(updateProcess_);
+    updateProcess_ = nullptr;
+    if (code == 0) {
+        updateState = UpdateState::UpToDate;
+        updateStatus = "Version " + updateInfo.version + " was installed. Restart the app to use it.";
+        notify(updateStatus, ui::InfoKind::Success);
+        return;
+    }
+    updateState = UpdateState::Available;
+    // Inno Setup exit codes: 2/5 = cancelled by the user, 1223 = Windows cancelled (UAC prompt declined).
+    if (code == 2 || code == 5 || code == 1223) {
+        updateError = "The update was cancelled.";
+    } else {
+        updateError = "Setup did not complete (exit code " + std::to_string(code) +
+                      "). See setup.log in %LOCALAPPDATA%\\RD Desktop Software\\updates.";
+    }
+    notify(updateError, ui::InfoKind::Warning);
+}
+
+// ---------------------------------------------------------------------------
 // Theme / settings
 // ---------------------------------------------------------------------------
 
@@ -451,6 +569,7 @@ void App::frame() {
     Async::pump();
     updateWindowChrome();
     maintainOAuthToken();
+    pollInstaller();
 
     // Column layouts change while the user drags; persist them a moment after the last change.
     if (settings.layoutDirty) {
@@ -671,6 +790,10 @@ void App::drawNavigation() {
         ImGui::PopFont();
         ImVec2 labelSize = ImGui::CalcTextSize(item.label);
         dl->AddText(ImVec2(pos.x + 48 * dpiScale, pos.y + (h - labelSize.y) * 0.5f), Theme::u32(textColor), item.label);
+        if (item.page == Page::Settings && updateAvailable()) {
+            // accent dot: an update is waiting on the Settings page
+            dl->AddCircleFilled(ImVec2(pos.x + size.x - 16 * dpiScale, pos.y + h * 0.5f), 4.0f * dpiScale, Theme::u32(P.accent));
+        }
         if (pressed) page = item.page;
         ImGui::Dummy(ImVec2(0, 2 * dpiScale));
     };

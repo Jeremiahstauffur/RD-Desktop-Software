@@ -9,6 +9,7 @@
 
 #include "RepairDeskApi.h"
 #include "Settings.h"
+#include "Updater.h"
 #include "Widgets.h"
 
 enum class Page { Inventory, POS, Tickets, Invoices, Customers, Communication, Settings, Search };
@@ -16,6 +17,7 @@ enum class Page { Inventory, POS, Tickets, Invoices, Customers, Communication, S
 class App {
 public:
     App(HWND hwnd, float dpiScale);
+    ~App();
 
     // Renders one frame of UI (between ImGui::NewFrame / ImGui::Render).
     void frame();
@@ -77,6 +79,20 @@ public:
     // Adds freshly created references (brand/model) to the cache.
     void mergeLookups(const Lookups& more);
 
+    // Updates (GitHub repository, see Updater.h) ---------------------------
+    enum class UpdateState { Idle, Checking, UpToDate, Available, Downloading, Installing, Failed };
+    UpdateState updateState = UpdateState::Idle;
+    updater::UpdateInfo updateInfo;    // newest published release (valid from Available on)
+    std::string updateStatus;          // outcome of the last check, shown in Settings
+    std::string updateError;           // last download/launch failure (empty = none)
+    std::atomic<unsigned long long> updateReceived{0};   // bytes downloaded so far (worker thread)
+    bool updateDismissed = false;      // "Later" pressed: no start-up toast again this session
+    bool updateAvailable() const { return updateState == UpdateState::Available; }
+    // `manual` = button press: failures are reported with a toast as well.
+    void checkForUpdates(bool manual);
+    void startUpdate();                // download, verify and launch the installer
+    void cancelUpdate();               // aborts a running download
+
     // Feedback -------------------------------------------------------------
     void notify(const std::string& message, ui::InfoKind kind = ui::InfoKind::Info);
 
@@ -112,8 +128,11 @@ private:
     void updateWindowChrome();
     void applyTokens(const OAuthTokens& tokens);
     void maintainOAuthToken();
+    void pollInstaller();              // watches the launched Setup process
     std::string oauthState_;
     double nextRefreshCheck_ = 0.0;
+    std::shared_ptr<std::atomic<bool>> updateCancel_;
+    HANDLE updateProcess_ = nullptr;
 
     // Animated state of the top progress bar (fractions of the window width).
     float progressSolid_ = 0.0f;

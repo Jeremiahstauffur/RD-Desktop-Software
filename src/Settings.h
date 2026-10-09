@@ -47,6 +47,8 @@ struct Settings {
     // Item count of the last successful inventory load; the top progress bar uses
     // it as its 100% mark on the first refresh after start-up.
     int inventoryLastCount = 0;
+    // Look for a newer release on GitHub when the app starts (result shown in Settings).
+    bool checkUpdatesOnStartup = true;
 
     // Column order / widths / visibility per table id (see DataTable).
     std::map<std::string, TableLayout> tableLayouts;

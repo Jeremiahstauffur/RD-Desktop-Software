@@ -17,7 +17,9 @@ A Windows 11–styled desktop client for the [RepairDesk](https://www.repairdesk
 | JSON | nlohmann/json `v3.12.0` (header only, fetched by CMake) |
 | Networking | WinHTTP (built in, no external SDK) |
 | Build | CMake ≥ 3.24 + Ninja; CLion bundled MinGW works out of the box |
-| Installer | Inno Setup 6 via `package.bat` → `dist\RD_Desktop_Software-<ver>-setup.exe` (**committed** so users need no build) |
+| Installer | Inno Setup 6 via `package.bat` → `dist\RD_Desktop_Software-<ver>-setup.exe` + `dist\update.json` (**committed** so users need no build and installed apps find updates) |
+| Version | `version.txt` (single source → CMake `project(VERSION)` → generated `version.h` → `.rc` VERSIONINFO, `updater::kCurrentVersion`; `package.bat`/`.iss` read it too) |
+| Updates | App fetches `dist/update.json` from GitHub `master` (`Updater.*`), downloads + SHA-256-verifies the installer, runs it `/SILENT /FROMAPP=1` |
 | Settings | `%APPDATA%\RD Desktop Software\settings.json` |
 
 Build with one click via `build.bat` (auto-detects CLion's bundled CMake/Ninja/MinGW, then PATH, then
@@ -34,22 +36,34 @@ The first configure requires internet access (FetchContent downloads ImGui + jso
 ## 2. Repository map
 
 ```
-CMakeLists.txt            Single target: RD_Desktop_Software (WIN32 exe). New .cpp files MUST be added here.
+CMakeLists.txt            Single target: RD_Desktop_Software (WIN32 exe). New .cpp files MUST be added here. Reads version.txt,
+                          generates build/generated/version.h from src/version.h.in.
+version.txt               The release version (one line). `package.bat <ver>` rewrites it; everything else derives from it.
 build.bat                 One-click build script (toolchain discovery, configure + build into build\, optional run).
-package.bat               build.bat + Inno Setup -> dist\RD_Desktop_Software-<ver>-setup.exe (installs Inno Setup via winget if missing).
+package.bat               build.bat + Inno Setup -> dist\RD_Desktop_Software-<ver>-setup.exe, deletes older installers in dist\, writes
+                          dist\update.json (version/installer URL/sha256/size/date); optional signtool signing via RD_SIGN_PFX/RD_SIGN_PASSWORD.
 installer/RD_Desktop_Software.iss  Inno Setup script (per-user default, Start menu + optional desktop shortcut, uninstaller; ships exe + *.dll + RDicon.ico;
-                          fixed AppId + UsePrevious* = in-place updates, [Code] reads the previous version/dir from the uninstall key).
-                          Version lives in package.bat (`VERSION`) and the .iss fallback `AppVersion`; bump both per release.
+                          fixed AppId + UsePrevious* = in-place updates, [Code] reads the previous version/dir from the uninstall key;
+                          VersionInfo*/AppPublisherURL metadata; `/FROMAPP=1` -> [Run] relaunches the app after a silent in-app update;
+                          `SignTool=` block active only when package.bat defines SignToolName). Falls back to version.txt for AppVersion.
 installer/RDicon.ico      App icon (generated from RDicon.png by tools\make_icon.ps1); embedded via src/app.rc, SetupIconFile, shortcut IconFilename.
 RDicon.png                Icon source image (51x53). Replace it and re-run tools\make_icon.ps1 to change the icon.
 tools/make_icon.ps1       PNG -> multi-size PNG-compressed .ico (System.Drawing, no external tool).
-dist/                     Ready-made installer, committed to git on purpose. Re-run package.bat after code changes.
+dist/                     Ready-made installer + update.json, committed to git on purpose (installed apps read update.json from
+                          GitHub master). Re-run package.bat after code changes; it keeps only the current installer.
 README.md                 User-facing docs: building, OAuth/API-key setup, feature list.
 AGENTS.md                 This file.
 src/
   main.cpp                Win32 window + DX11 device/swap chain, ImGui backend init, main loop; window class icon = IDI_APPICON.
-  app.rc / resource.h     Windows resources: IDI_APPICON (app icon). Added to the CMake target (project LANGUAGES CXX RC).
-  App.h / App.cpp         Top-level application state, navigation rail, page routing, global search bar.
+  app.rc / resource.h     Windows resources: IDI_APPICON (app icon), RT_MANIFEST (app.manifest: asInvoker, Win10/11, PerMonitorV2 DPI),
+                          VS_VERSION_INFO from version.h. Added to the CMake target (project LANGUAGES CXX RC).
+  app.manifest            Application manifest embedded by app.rc.
+  version.h.in            Template for the generated version.h (RD_VERSION_MAJOR/MINOR/PATCH/STRING).
+  Updater.h / Updater.cpp GitHub update check: fetch dist/update.json (RD_UPDATE_MANIFEST_URL env overrides the URL for testing),
+                          compareVersions, download to %LOCALAPPDATA%\RD Desktop Software\updates with progress/cancel + size/SHA-256
+                          check (bcrypt), launchInstaller (/SILENT /NORESTART /FROMAPP=1 /LOG), cleanupDownloads.
+  App.h / App.cpp         Top-level application state, navigation rail, page routing, global search bar, update state machine
+                          (UpdateState, checkForUpdates/startUpdate/cancelUpdate/pollInstaller; start-up check + toast).
   Pages.h                 Declarations of every page/panel draw function.
   pages/ListPage.h        Shared paged/searchable list scaffolding used by Tickets/Invoices/Customers.
   pages/InventoryPage.cpp Inventory table, column chooser, bulk actions, product page (suggest drop-downs, price pill + formula popup).
@@ -59,15 +73,17 @@ src/
   pages/RecordViewer.cpp  Generic "show every field of a JSON record" viewer.
   pages/CommunicationPage.cpp  SMS inbox + send-SMS form.
   pages/SearchPage.cpp    Global search results across products/invoices/tickets/customers.
-  pages/SettingsPage.cpp  API key / OAuth2 credentials, theme, accent colour, font size.
+  pages/SettingsPage.cpp  Updates card (installed version, check, update prompt/progress, start-up toggle), API key / OAuth2
+                          credentials, theme, accent colour, font size.
   DataTable.h/.cpp        Reusable ImGui table: column visibility, reorder, resize, sort, multi-select; layout persisted by
                           column key in Settings::tableLayouts (bindSettings); single-click inline editing with Tab/Shift+Tab
                           along the row (staged, one onRowEdited per row), double-click = onRowDoubleClicked.
   Widgets.h/.cpp          Custom Win11-styled ImGui widgets (buttons, inputs, toggles, SuggestField/ComboField, PillButton).
   Theme.h/.cpp            Dark/light theme + accent colour application.
   Settings.h/.cpp         Load/save settings.json (OAuth tokens, theme/accent/fontSize, TableLayout per table id,
-                          inventoryLastCount for the progress bar, suggested-price formula `suggestedPrice()`).
-  Http.h/.cpp             WinHTTP wrapper (GET/POST/PUT/DELETE, headers, query params).
+                          inventoryLastCount for the progress bar, checkUpdatesOnStartup, suggested-price formula `suggestedPrice()`).
+  Http.h/.cpp             WinHTTP wrapper (GET/POST/PUT/DELETE, headers, query params); `downloadToFile` streams to disk with a
+                          progress/cancel callback (shared `perform()` transport, User-Agent carries the version).
   RepairDeskApi.h/.cpp    Typed wrappers over the RepairDesk Public API; OAuth2 token exchange/refresh;
                           `Lookups` reference data (manufacturers/devices/suppliers/tax classes/locations) and
                           `resolveLookupIds()` which turns UI names into the ids the write endpoints need.
@@ -109,6 +125,16 @@ src/
   commit is what makes Tab-through editing a single API request.
 - Adding a new page: declare in `Pages.h`, implement in `src/pages/`, register in `App.cpp`
   navigation, and add the `.cpp` to `CMakeLists.txt`.
+- **Releases:** the version is edited in `version.txt` only (or via `package.bat <ver>`); never hard-code it
+  in `.rc`, `.iss`, `.bat` or C++ — read `RD_VERSION_STRING` / `updater::kCurrentVersion`. A release is
+  `package.bat` → commit `dist\` (installer + `update.json`) → push to `master`; installed apps compare
+  `update.json`'s `version` against their own and download the `installer` URL. The update state machine is
+  in `App` (`UpdateState`, `checkForUpdates/startUpdate/cancelUpdate/pollInstaller`); pages only render it.
+- **Antivirus hygiene:** keep the exe's VERSIONINFO + manifest (`app.rc`) and the installer's `VersionInfo*`
+  fields; scan `dist\*.exe` with `MpCmdRun.exe -Scan -ScanType 3 -File <exe> -DisableRemediation` before
+  committing. Don't add behaviour that looks like evasion (self-deletion, writing to other processes,
+  registry run keys, UAC bypasses); the updater only writes under `%LOCALAPPDATA%` and spawns Setup via
+  `ShellExecuteEx`.
 
 ### Dependencies
 - Don't add new third-party libraries without a strong reason. If you must, use `FetchContent` in
@@ -141,6 +167,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-09 | v1.2.0: (1) Defender false positive (`Behavior:Win32/DefenseEvasion.A!ml` on `dist\…-1.1.0-setup.exe`): bisected the `.iss` with Defender's `MpCmdRun` — the flag was ML/heuristic (an identical-config rebuild scanned clean), so hardened the binaries instead: `src/app.rc` now embeds `VS_VERSION_INFO` (from generated `version.h`) + `app.manifest` (asInvoker, Win10/11, PerMonitorV2), `.iss` gained `VersionInfo*`/`AppPublisherURL`/`AppCopyright` and optional `SignTool` (`package.bat` signs exe+setup+uninstaller when `RD_SIGN_PFX`/`RD_SIGN_PASSWORD` are set). README documents SmartScreen/false-positive reporting. (2) Single version source `version.txt` → CMake `project(VERSION)` → `version.h`; `package.bat <ver>` rewrites it. (3) In-app updates: `Updater.*` fetches `dist/update.json` from GitHub `master` (`package.bat` writes it with sha256/size/date and deletes older installers), `App::checkForUpdates` runs at start-up (`Settings::checkUpdatesOnStartup`, toast + accent dot on the Settings nav item) and from Settings → **Updates** card (installed version, *Version x is available … update now?* with **Update now**/**Later**, download progress bar + Cancel, errors); `startUpdate` downloads via new `http::downloadToFile` (streaming, progress/cancel), verifies size + SHA-256 (bcrypt), saves settings, launches Setup `/SILENT /NORESTART /FROMAPP=1 /LOG`; Setup closes the app (`CloseApplications`) and the new `[Run]` entry relaunches it; `pollInstaller` reports a cancelled/failed Setup. | Done (verified: Defender scan of exe + 1.2.0 setup clean; console harness against a local HTTP server — check/compare/download/sha mismatch/size mismatch/404/cancel all pass; silent 1.2.0 install → running app → `/SILENT /FROMAPP=1` update closed the old process and relaunched the new one, uninstall clean). Needs a live pass once `dist\` is pushed: the installed 1.1.0 has no updater, so the first in-app update will be 1.2.0 → next version |
 | 2026-10-09 | v1.1.0: (1) installer updates in place — fixed `AppId`, `UsePreviousPrivileges/AppDir/Tasks`, `DirExistsWarning=no`, `[Code]` reads previous `DisplayVersion`/`InstallLocation` from HKCU/HKLM, skips the folder page and lists the kept preferences on the Ready page; `package.bat`/`.iss` version 1.1.0. (2) Preferences persisted in `settings.json`: `fontSize`, `inventoryLastCount`, `tableLayouts` (order/width/visibility/sort by column key) via `DataTable::bindSettings` + `applySavedLayout` (writes `ImGuiTableSettings`, requests reload) / `captureLayout` (debounced save in `App::frame`). (3) Settings → Appearance font-size slider 11–24 px (`Theme::loadFonts(dpi, fontScale)`, atlas rebuilt between frames via `App::requestFontRebuild`). (4) Inventory table: single click edits a cell in place, Tab/Shift+Tab stage edits along the row, Enter/click-away/end of row commit one `saveRowEdits` PUT, Esc discards; double-click opens the product page (`onRowDoubleClicked`; `onCellEdited` removed). (5) Progress bar: 100 % mark falls back to the persisted previous count on the first load after start-up, fills when the load finishes early. `build.bat` quotes `-DCMAKE_MAKE_PROGRAM` (CLion under `Program Files`). | Done (verified: release build; app starts and writes the new keys; silent 1.0.0 → 1.1.0 update keeps dir/registry entry/settings, uninstall clean). Inline editing / Tab / font size / progress bar need a manual pass against live data |
 | 2026-10-08 | App icon from `RDicon.png`: `tools\make_icon.ps1` pads to square and writes `installer\RDicon.ico` (16–256 px, PNG entries); `src\app.rc` + `resource.h` embed it (CMake `LANGUAGES CXX RC`), `main.cpp` sets `hIcon`/`hIconSm` so taskbar + title bar show it; `.iss` gained `SetupIconFile`, ships `RDicon.ico` and uses it as `IconFilename` for Start menu/desktop shortcuts. `dist\` installer rebuilt. | Done (verified: exe/setup icon extract OK, silent install → shortcuts point at `{app}\RDicon.ico`, uninstall clean) |
 | 2026-10-08 | Installer committed + `libwinpthread-1.dll` fix: `dist/` removed from `.gitignore` so the setup exe ships with the repo (README "Installing (no build needed)"); CMake copies `libwinpthread-1.dll` from the compiler's dir next to the exe post-build and the `.iss` packages `*.dll` beside the exe. Static linking of winpthread was tried (`-static`, `-Bstatic -lpthread`, `-mcrtdll=ucrt`) and fails with CLion's bundled MinGW 15.2 — see §5. | Done (verified: installed app starts with `PATH` reduced to System32; uninstall clean) |
@@ -181,6 +208,16 @@ Newest entries first. One line per task: date, what changed, status.
 - [ ] Only the inventory table is editable; Tickets/Invoices/Customers still open the record viewer on a
       single click (`onRowClicked`), which is intended but inconsistent with the inventory double-click.
 - [ ] Non-square `RDicon.png`; a 256×256 source would remove the blur at large icon sizes.
+- [ ] No code-signing certificate: SmartScreen still warns on a fresh download and ML false positives can
+      recur with any rebuild. `package.bat` is ready for `signtool` (`RD_SIGN_PFX`); an OV/EV cert or Azure
+      Trusted Signing would make the warning go away for good.
+- [ ] The update manifest is served from `raw.githubusercontent.com` on `master` (cached ~5 min, 100 MB file
+      limit, counts against repo size). GitHub Releases (`/releases/latest/download/...`) would avoid bloating
+      the repository history with every installer; `Updater::check` would then parse the Releases API JSON.
+- [ ] A per-machine (all-users) install launched from a per-user app session triggers a UAC prompt during the
+      in-app update (`/SILENT` keeps the prompt); exit code 1223 is reported as *cancelled*. Not tested live.
+- [ ] The console harness used to verify `Updater` (local `HttpListener` + `RD_UPDATE_MANIFEST_URL`) lived in
+      the scratch dir; promoting it to a `tests/` CMake target would give the project its first automated test.
 
 ## 5. Lessons learned
 
@@ -290,6 +327,30 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
 - **Rebuilding the font atlas needs the backend's cooperation.** Call `ImGui_ImplDX11_InvalidateDeviceObjects()`
   then `Theme::loadFonts(...)` *before* `ImGui_ImplDX11_NewFrame()`; the backend recreates the font
   texture on the next frame. Doing it inside a draw function asserts.
+- **Defender `*.A!ml` detections are heuristic, not signatures.** `Behavior:Win32/DefenseEvasion.A!ml` on the
+  1.1.0 installer could not be reproduced by rebuilding the *same* `.iss` — the bare exe, a minimal `.iss` and
+  the full `.iss` all scanned clean, so bisecting the script is pointless. Scan locally with
+  `C:\ProgramData\Microsoft\Windows Defender\Platform\<ver>\MpCmdRun.exe -Scan -ScanType 3 -File <exe>
+  -DisableRemediation` (prints `found no threats` or `Threat : …`) and reduce the attack-surface signals
+  instead: VERSIONINFO + manifest on the exe, `VersionInfo*` on the setup, no packers/self-extracting tricks,
+  and ideally a code signature. Report remaining hits at <https://www.microsoft.com/wdsi/filesubmission>.
+- **Version in one place.** `file(STRINGS version.txt …)` + `project(... VERSION ...)` + `configure_file` give
+  `RD_VERSION_*` to C++ and `windres` alike (the `.rc` can `#include` the generated header because the generated
+  dir is on the target's include path, which `RC` compiles honour). Inno Setup can read the same file at
+  compile time with `#define F FileOpen(...)` / `FileRead` / `FileClose`. `CMAKE_CONFIGURE_DEPENDS` on
+  `version.txt` makes a bump re-run the configure step automatically.
+- **MinGW link order quirks for the update code.** `FOLDERID_LocalAppData` needs `-luuid` (CMake target already
+  links `uuid`; a hand-rolled `g++` test command must add it), SHA-256 via CNG needs `-lbcrypt`. A console test
+  exe built the same way still needs `libwinpthread-1.dll` on `PATH` (exit code `0xC0000135` otherwise).
+- **Inno Setup from the running app.** Start Setup with `/SILENT /NORESTART` (progress window only; `/VERYSILENT`
+  would hide the UAC/close-apps feedback) plus a custom `/FROMAPP=1`; read it in `[Code]` with
+  `ExpandConstant('{param:FROMAPP|0}')` and use it as `Check:` on a `[Run]` entry with `postinstall skipifnotsilent`
+  so the new version is relaunched only for in-app updates. `CloseApplications=yes` closes the running exe via
+  Restart Manager without any prompt in silent mode. When testing with PowerShell, `Start-Process -Wait` waits
+  for the relaunched *child* app too — poll `HasExited`/the log instead of `-Wait`.
+- **`raw.githubusercontent.com` caches ~5 min.** Append a `?t=<unix time>` cache-buster to the manifest GET; the
+  installer download may still lag behind a fresh push, which is why `Updater::download` verifies `size` and
+  `sha256` and tells the user to retry in a few minutes on mismatch.
 
 ## 6. Prompt wishes
 
@@ -347,6 +408,12 @@ was ambiguous, record here what information would have helped.
   (here: save) and whether Esc should discard the whole row or just the current cell (here: whole row).
   For "progress bar does not fill" say whether it was the very first load after start-up (no previous
   count known) or a later refresh — that was the actual cause here.
+- (2026-10-09) For antivirus reports, paste the exact detection name (`Behavior:Win32/DefenseEvasion.A!ml`
+  was found in Defender's protection history here), which file was flagged (installer vs. installed exe vs.
+  `build\` exe) and when (download, first run, in-app update), and whether buying a code-signing certificate
+  is an option — without one the fix can only reduce heuristics, not guarantee a clean verdict. For update
+  requests say where releases should live (committed `dist\` vs. GitHub Releases), which branch, whether the
+  check should run at start-up or only on demand, and whether the update may restart the app automatically.
 
 ---
 
