@@ -77,9 +77,13 @@ public:
     std::shared_ptr<WriteJob> beginWriteJob(size_t total = 1);
     void finishWriteJob(const std::shared_ptr<WriteJob>& job);
 
-    // Finds an item by scanned code: SKU first, then UPC, then name.
-    // Returns -1 when nothing matches.
+    // Finds an item by scanned code: the first exact (case-insensitive) SKU match, otherwise
+    // the first exact UPC match, otherwise the first exact name match. Returns -1 when
+    // nothing matches; partial matches are never returned.
     int findInventoryByCode(const std::string& code) const;
+    // Indices of items where every space-separated term of `text` occurs in some field
+    // (same rule as the inventory table search). At most `limit` results (0 = all).
+    std::vector<int> searchInventory(const std::string& text, size_t limit = 0) const;
 
     // Reference data (manufacturers, devices, suppliers, tax classes, conditions,
     // physical locations). Loaded with the first inventory refresh; shared with

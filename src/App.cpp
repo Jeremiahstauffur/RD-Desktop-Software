@@ -538,13 +538,43 @@ int App::findInventoryByCode(const std::string& rawCode) const {
     if (idx >= 0) return idx;
     idx = matchField([](const InventoryItem& it) { return it.upc; });
     if (idx >= 0) return idx;
-    idx = matchField([](const InventoryItem& it) { return it.name; });
-    if (idx >= 0) return idx;
-    // Finally, a partial name match (useful when typing instead of scanning).
-    for (size_t i = 0; i < inventory.size(); ++i) {
-        if (lowercase(inventory[i].name).find(code) != std::string::npos) return (int)i;
+    return matchField([](const InventoryItem& it) { return it.name; });
+}
+
+std::vector<int> App::searchInventory(const std::string& text, size_t limit) const {
+    std::vector<std::string> terms;
+    std::string cur;
+    for (unsigned char c : text) {
+        if (std::isspace(c)) {
+            if (!cur.empty()) { terms.push_back(cur); cur.clear(); }
+        } else {
+            cur.push_back((char)std::tolower(c));
+        }
     }
-    return -1;
+    if (!cur.empty()) terms.push_back(cur);
+
+    std::vector<int> out;
+    if (terms.empty()) return out;
+    auto containsNoCase = [](const std::string& hay, const std::string& needleLower) {
+        if (hay.size() < needleLower.size()) return false;
+        auto it = std::search(hay.begin(), hay.end(), needleLower.begin(), needleLower.end(),
+                              [](unsigned char a, unsigned char b) { return (char)std::tolower(a) == (char)b; });
+        return it != hay.end();
+    };
+    for (size_t i = 0; i < inventory.size(); ++i) {
+        bool all = true;
+        for (const std::string& term : terms) {
+            bool found = false;
+            for (const auto& [key, value] : inventory[i].fields) {
+                if (containsNoCase(value, term)) { found = true; break; }
+            }
+            if (!found) { all = false; break; }
+        }
+        if (!all) continue;
+        out.push_back((int)i);
+        if (limit && out.size() >= limit) break;
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------

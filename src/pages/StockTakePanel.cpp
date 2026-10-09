@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <vector>
@@ -6,6 +8,7 @@
 #include <windows.h>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
 #include "App.h"
@@ -25,13 +28,24 @@ struct ScanEntry {
     int scanned = 0;      // how many times the item has been scanned
 };
 
+constexpr double kSuggestDelay = 1.0;   // seconds without typing before the product list appears
+constexpr size_t kSuggestLimit = 25;
+
 struct StockTakeState {
     std::string input;
+    std::string lastInput;          // input as of the previous frame (detects typing)
+    double typedAt = 0.0;           // time of the last keystroke in the scan field
+    std::vector<int> suggestions;   // inventory indices shown under the field
+    bool suggestReady = false;      // the pause elapsed and `suggestions` reflects `input`
+    unsigned suggestRevision = 0;   // inventoryRevision the suggestions were built for
     std::vector<ScanEntry> entries;
     bool focusInput = true;
     double errorUntil = 0.0;
     std::string errorText;
     bool applying = false;
+    long long editingId = 0;        // entry whose scanned count is being typed
+    std::string editText;
+    bool focusEdit = false;
 };
 
 StockTakeState& S() {
@@ -39,23 +53,16 @@ StockTakeState& S() {
     return s;
 }
 
-void handleScan(App& app) {
+void clearSuggestions(StockTakeState& s) {
+    s.suggestions.clear();
+    s.suggestReady = false;
+    s.typedAt = 0.0;
+}
+
+// Adds one scan of `item` to the list (or bumps its count) and moves it to the top.
+void addScan(const InventoryItem& item) {
     StockTakeState& s = S();
-    std::string code = s.input;
-    s.input.clear();
-    s.focusInput = true;
-    if (code.find_first_not_of(" \t\r\n") == std::string::npos) return;
-
-    int idx = app.findInventoryByCode(code);
-    if (idx < 0) {
-        MessageBeep(MB_ICONHAND);
-        s.errorText = "No item found";
-        s.errorUntil = ImGui::GetTime() + 4.0;
-        return;
-    }
     s.errorUntil = 0.0;
-
-    const InventoryItem& item = app.inventory[idx];
     for (ScanEntry& e : s.entries) {
         if (e.id == item.id) {
             e.scanned++;
@@ -75,6 +82,131 @@ void handleScan(App& app) {
     e.dbQty = item.inStock;
     e.scanned = 1;
     s.entries.insert(s.entries.begin(), e);
+}
+
+// Enter pressed: exact SKU, then exact UPC, then exact name.
+void handleScan(App& app) {
+    StockTakeState& s = S();
+    std::string code = s.input;
+    s.input.clear();
+    s.lastInput.clear();
+    s.focusInput = true;
+    clearSuggestions(s);
+    if (code.find_first_not_of(" \t\r\n") == std::string::npos) return;
+
+    int idx = app.findInventoryByCode(code);
+    if (idx < 0) {
+        MessageBeep(MB_ICONHAND);
+        s.errorText = "No item found";
+        s.errorUntil = ImGui::GetTime() + 4.0;
+        return;
+    }
+    addScan(app.inventory[idx]);
+}
+
+// A product picked from the suggestion list under the scan field.
+void pickSuggestion(App& app, int idx) {
+    StockTakeState& s = S();
+    s.input.clear();
+    s.lastInput.clear();
+    s.focusInput = true;
+    clearSuggestions(s);
+    if (idx >= 0 && idx < (int)app.inventory.size()) addScan(app.inventory[idx]);
+}
+
+// Rebuilds the suggestion list once the user has paused typing for kSuggestDelay.
+void updateSuggestions(App& app) {
+    StockTakeState& s = S();
+    if (s.input != s.lastInput) {
+        s.lastInput = s.input;
+        clearSuggestions(s);
+        if (s.input.find_first_not_of(" \t\r\n") != std::string::npos) s.typedAt = ImGui::GetTime();
+        return;
+    }
+    if (s.typedAt <= 0.0 || ImGui::GetTime() - s.typedAt < kSuggestDelay) return;
+    if (!s.suggestReady || s.suggestRevision != app.inventoryRevision) {
+        s.suggestions = app.searchInventory(s.input, kSuggestLimit);
+        s.suggestRevision = app.inventoryRevision;
+        s.suggestReady = true;
+    }
+}
+
+// Drop-down window under the scan field listing the products that match the typed text.
+// Returns the inventory index of a clicked product, or -1.
+int drawSuggestions(App& app, const ImVec2& fieldMin, const ImVec2& fieldMax) {
+    StockTakeState& s = S();
+    const Palette& P = Theme::get().palette();
+    const float dpi = app.dpiScale;
+    if (!s.suggestReady) return -1;
+
+    const float rowH = ImGui::GetTextLineHeight() * 2 + 10 * dpi;
+    const size_t rows = s.suggestions.empty() ? 1 : s.suggestions.size();
+    const float listH = std::min((float)rows, 7.0f) * rowH + 8 * dpi;
+    ImGui::SetNextWindowPos(ImVec2(fieldMin.x, fieldMax.y + 2.0f));
+    ImGui::SetNextWindowSize(ImVec2(fieldMax.x - fieldMin.x, listH));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, P.surface);
+    ImGui::PushStyleColor(ImGuiCol_Border, P.border);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4 * dpi, 4 * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoCollapse;
+    ImGui::Begin("##stockSuggest", nullptr, flags);
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+    const bool hovering = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
+
+    int picked = -1;
+    if (s.suggestions.empty()) {
+        ui::SecondaryText("No products contain this text. Press Enter to match an exact SKU, UPC or name.");
+    }
+    for (size_t i = 0; i < s.suggestions.size(); ++i) {
+        const int idx = s.suggestions[i];
+        if (idx < 0 || idx >= (int)app.inventory.size()) continue;
+        const InventoryItem& it = app.inventory[idx];
+        ImGui::PushID((int)i);
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        if (ImGui::Selectable("##row", false, ImGuiSelectableFlags_AllowOverlap, ImVec2(0, rowH - 4 * dpi))) picked = idx;
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float x = pos.x + 6 * dpi;
+        const float right = pos.x + ImGui::GetContentRegionAvail().x + ImGui::GetStyle().ItemSpacing.x;
+        dl->AddText(ImVec2(x, pos.y + 3 * dpi), Theme::u32(P.text), it.name.c_str());
+        std::string codes = it.sku;
+        if (!it.upc.empty()) codes += (codes.empty() ? "" : "  |  ") + std::string("UPC ") + it.upc;
+        dl->AddText(ImVec2(x, pos.y + 3 * dpi + ImGui::GetTextLineHeight()), Theme::u32(P.textSecondary), codes.c_str());
+        char qty[48];
+        std::snprintf(qty, sizeof(qty), "%d in stock", it.inStock);
+        float qtyW = ImGui::CalcTextSize(qty).x;
+        dl->AddText(ImVec2(right - qtyW - 6 * dpi, pos.y + 3 * dpi), Theme::u32(P.textSecondary), qty);
+        ImGui::PopID();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+
+    // A click anywhere else (or Escape) hides the list until the user types again.
+    bool clickedOutside = ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !hovering &&
+                          !ImGui::IsMouseHoveringRect(fieldMin, fieldMax);
+    if (clickedOutside || ImGui::IsKeyPressed(ImGuiKey_Escape)) clearSuggestions(s);
+    return picked;
+}
+
+// Commits the typed scanned count of the entry being edited (if any).
+void commitCountEdit(StockTakeState& s) {
+    if (s.editingId == 0) return;
+    for (ScanEntry& e : s.entries) {
+        if (e.id != s.editingId) continue;
+        const std::string& t = s.editText;
+        size_t a = t.find_first_not_of(" \t");
+        if (a != std::string::npos) {
+            char* end = nullptr;
+            long v = std::strtol(t.c_str() + a, &end, 10);
+            if (end != t.c_str() + a) e.scanned = (int)std::max(0L, std::min(v, 999999L));
+        }
+        break;
+    }
+    s.editingId = 0;
+    s.editText.clear();
 }
 
 struct TargetEntry {
@@ -228,6 +360,7 @@ void stockTake(App& app) {
     ui::AlignRight(ImGui::GetFrameHeight());
     if (ui::IconButton("closeStock", icons::Close, "Close stock take")) app.stockTakeOpen = false;
     ui::SecondaryText("Scan a barcode or type a SKU, UPC or name, then press Enter.");
+    ui::SecondaryText("Pause while typing to pick a product from a list.");
     ui::SecondaryText("Nothing is changed in RepairDesk until you press Submit.");
     ui::VerticalSpace(4 * dpi);
 
@@ -241,11 +374,18 @@ void stockTake(App& app) {
     bool entered = ImGui::InputTextWithHint("##scan", "Scan here...", &s.input,
                                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
     ImGui::PopFont();
+    const ImVec2 scanMin = ImGui::GetItemRectMin(), scanMax = ImGui::GetItemRectMax();
     if (ImGui::IsItemActive()) {
-        ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddLine(ImVec2(mn.x + 4, mx.y - 1), ImVec2(mx.x - 4, mx.y - 1), Theme::u32(P.accent), 2.0f);
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(scanMin.x + 4, scanMax.y - 1), ImVec2(scanMax.x - 4, scanMax.y - 1), Theme::u32(P.accent), 2.0f);
     }
-    if (entered) handleScan(app);
+    if (entered) {
+        handleScan(app);
+    } else {
+        updateSuggestions(app);
+    }
+    // Deferred: the list is a separate window, drawn after the panel so it overlaps the entries.
+    int pickedSuggestion = -1;
+    const bool showSuggestions = !entered && s.suggestReady;
 
     // "No item found" line (small red text)
     if (ImGui::GetTime() < s.errorUntil) {
@@ -325,7 +465,38 @@ void stockTake(App& app) {
         ImGui::BeginGroup();
         ui::SecondaryText("Scanned");
         ImGui::PushFont(F.subtitle);
-        ImGui::TextColored(P.accent, "%d", e.scanned);
+        if (s.editingId == e.id) {
+            // Typing a new count: Enter or clicking away commits, Esc cancels.
+            if (s.focusEdit) { ImGui::SetKeyboardFocusHere(); s.focusEdit = false; }
+            ImGui::SetNextItemWidth(ImGui::CalcTextSize("000000").x + ImGui::GetStyle().FramePadding.x * 2);
+            ImGui::PushStyleColor(ImGuiCol_Text, P.accent);
+            bool done = ImGui::InputText("##count", &s.editText,
+                                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_EnterReturnsTrue |
+                                             ImGuiInputTextFlags_AutoSelectAll);
+            ImGui::PopStyleColor();
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                s.editingId = 0;
+                s.editText.clear();
+                s.focusInput = true;
+            } else if (done || ImGui::IsItemDeactivated()) {
+                commitCountEdit(s);
+                s.focusInput = true;
+            }
+        } else {
+            ImGui::TextColored(P.accent, "%d", e.scanned);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(mn.x, mx.y), ImVec2(mx.x, mx.y), Theme::u32(P.accent), 1.0f);
+                ui::Tooltip("Click to type the counted quantity");
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    commitCountEdit(s);
+                    s.editingId = e.id;
+                    s.editText = std::to_string(e.scanned);
+                    s.focusEdit = true;
+                }
+            }
+        }
         ImGui::PopFont();
         ImGui::EndGroup();
 
@@ -341,7 +512,10 @@ void stockTake(App& app) {
         ImGui::EndChild();
         ImGui::PopID();
     }
-    if (removeIndex >= 0) s.entries.erase(s.entries.begin() + removeIndex);
+    if (removeIndex >= 0) {
+        if (s.editingId == s.entries[removeIndex].id) { s.editingId = 0; s.editText.clear(); }
+        s.entries.erase(s.entries.begin() + removeIndex);
+    }
     ImGui::EndChild();
 
     // Footer ---------------------------------------------------------------
@@ -363,6 +537,9 @@ void stockTake(App& app) {
     }
 
     ImGui::EndChild();
+
+    if (showSuggestions) pickedSuggestion = drawSuggestions(app, scanMin, scanMax);
+    if (pickedSuggestion >= 0) pickSuggestion(app, pickedSuggestion);
 }
 
 } // namespace pages

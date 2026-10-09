@@ -6,13 +6,13 @@ downloaded automatically by CMake, and networking uses the built-in WinHTTP libr
 
 ## Installing (no build needed)
 
-A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.3.0-setup.exe`. It
+A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.4.0-setup.exe`. It
 installs per user by default (no administrator prompt; "all users" can be chosen), adds a Start menu
 entry, an optional desktop shortcut (both with the RepairDesk icon, which the app also shows in the
 taskbar and title bar) and an uninstaller (Settings → Apps). The app needs no other software: the MinGW
 runtime (`libwinpthread-1.dll`) is included next to the exe. Uninstalling asks
 whether to also delete `%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
-`RD_Desktop_Software-1.3.0-setup.exe /VERYSILENT /CURRENTUSER`.
+`RD_Desktop_Software-1.4.0-setup.exe /VERYSILENT /CURRENTUSER`.
 
 ### Updating
 
@@ -27,7 +27,7 @@ at start-up can be switched off in the same card (`checkUpdatesOnStartup` in `se
 
 You can also download the new installer by hand and run it. Either way the existing installation
 (per-user or all-users) is updated in place with the same install mode and shortcut choices (the
-folder page is skipped and the summary page shows *Existing installation found: 1.2.0 → 1.3.0*), and
+folder page is skipped and the summary page shows *Existing installation found: 1.3.0 → 1.4.0*), and
 the Add/Remove Programs entry is replaced instead of a second one being added. Your preferences are
 kept: they live in `%APPDATA%\RD Desktop Software\settings.json`, which Setup never touches – accent
 colour, theme, font size, the column order/widths/visibility of every table, the API key / OAuth
@@ -38,7 +38,7 @@ credentials and tokens.
 The installer and the app are **not code-signed** (a certificate costs money), so Windows SmartScreen
 may show *Windows protected your PC* for a freshly downloaded setup – click **More info → Run anyway**.
 Both executables carry full version information, a manifest and a modern Inno Setup build; the
-`RD_Desktop_Software-1.3.0-setup.exe` in `dist\` scans clean with Microsoft Defender. If Defender
+`RD_Desktop_Software-1.4.0-setup.exe` in `dist\` scans clean with Microsoft Defender. If Defender
 still quarantines a build on your machine, report it as a false positive at
 <https://www.microsoft.com/wdsi/filesubmission> (the definitions are usually updated within a day),
 or build from source. To sign a release yourself, set `RD_SIGN_PFX` / `RD_SIGN_PASSWORD` before
@@ -75,16 +75,16 @@ The first configure downloads Dear ImGui and nlohmann/json, so an internet conne
 
 ## Rebuilding the installer / publishing an update
 
-The version number lives in `version.txt` (one line, e.g. `1.3.0`); CMake compiles it into the exe
+The version number lives in `version.txt` (one line, e.g. `1.4.0`); CMake compiles it into the exe
 (version resource, *Installed version* in Settings) and the installer reads it too. To publish a
-release: bump the version (`package.bat 1.4.0` writes it for you), double-click `package.bat`, then
+release: bump the version (`package.bat 1.5.0` writes it for you), double-click `package.bat`, then
 commit `dist\` with the source and push. The script runs `build.bat`, compiles
 `installer\RD_Desktop_Software.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) into
 `dist\RD_Desktop_Software-<version>-setup.exe` (the exe, `libwinpthread-1.dll`, `RDicon.ico` and this
 README), deletes older installers from `dist\` and writes `dist\update.json`:
 
 ```json
-{ "version": "1.3.0", "installer": "https://raw.githubusercontent.com/.../dist/RD_Desktop_Software-1.3.0-setup.exe",
+{ "version": "1.4.0", "installer": "https://raw.githubusercontent.com/.../dist/RD_Desktop_Software-1.4.0-setup.exe",
   "sha256": "...", "size": 3511208, "date": "2026-10-09" }
 ```
 
@@ -176,9 +176,16 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
   (`round(cost × 2 to the nearest 0.20) − 0.05`, shown in USD) – click it to copy the amount into Price;
   the small pencil beside it lets you change the multiplier, rounding step and subtraction (saved in
   settings).
-- **Stock take** – right-hand sidebar; scan or type a code and it is matched by SKU → UPC → name.
-  Unknown codes play an error sound and show a red "No item found" line. Each scanned item shows the
-  database quantity, the change (red/green) and the scanned count (accent colour). Nothing is written
+- **Stock take** – right-hand sidebar; scan or type a code and press **Enter**: it is matched against
+  the first product whose SKU is exactly that code, otherwise the first whose UPC is, otherwise the
+  first whose name is (never a partial match). Unknown codes play an error sound and show a red
+  "No item found" line. If you type something and pause for a second without pressing Enter, a list
+  drops down under the field with every product that contains the text in any of its fields (the same
+  rule as the inventory search box – several words must all match); click a product to add it to the
+  stock take. Each scanned item shows the database quantity, the change (red/green) and the scanned
+  count (accent colour); scanning the same barcode again adds 1, the +/− buttons adjust by 1, and
+  **clicking the scanned count** lets you type the counted quantity directly (Enter or clicking away
+  saves it, Esc cancels). Nothing is written
   to RepairDesk until **Submit** is pressed. Submit sends the *change* (scanned − database quantity)
   as a stock adjustment, re-reads the item and, if RepairDesk reports a different quantity (it handles
   decreases differently from increases), sends the remaining difference again until the item is at
