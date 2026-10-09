@@ -12,6 +12,7 @@
 #include <imgui_stdlib.h>
 
 #include "Async.h"
+#include "DataTable.h"
 #include "Pages.h"
 #include "Theme.h"
 
@@ -44,6 +45,7 @@ std::string timeNow() {
 
 App::App(HWND hwnd, float dpi) : dpiScale(dpi), hwnd_(hwnd) {
     settings.load();
+    DataTable::bindSettings(&settings);   // tables restore/persist their column layouts
     applyTheme();
     if (!connected()) {
         notify("Welcome! Open Settings to connect to RepairDesk with an API key or OAuth2 client credentials.",
@@ -307,7 +309,9 @@ void App::refreshInventory(const std::string& keyword) {
     if (!lookups->loaded) refreshLookups();
     inventoryLoading = true;
     inventoryError.clear();
-    inventoryPreviousTotal = inventory.size();
+    // 100% mark of the progress bar: the current item count, or on the first load after
+    // start-up the count persisted from the previous session.
+    inventoryPreviousTotal = inventory.empty() ? (size_t)std::max(0, settings.inventoryLastCount) : inventory.size();
     inventoryLoadProgress.store(0);
     progressSolid_ = 0.0f;
     progressDotted_ = 0.0f;
@@ -319,7 +323,7 @@ void App::refreshInventory(const std::string& keyword) {
         [client, keyword, maxItems, progress] {
             return client.listInventory(keyword, maxItems, 100, [progress](size_t loaded) { progress->store(loaded); });
         },
-        [this](ApiResult<std::vector<InventoryItem>> result) {
+        [this, keyword](ApiResult<std::vector<InventoryItem>> result) {
             inventoryLoading = false;
             inventoryLoadedOnce = true;
             progressHideAt_ = ImGui::GetTime() + 0.8;
@@ -327,6 +331,10 @@ void App::refreshInventory(const std::string& keyword) {
                 inventory = std::move(result.value);
                 inventoryLoadProgress.store(inventory.size());
                 inventoryStatus = "Loaded " + std::to_string(inventory.size()) + " items at " + timeNow();
+                if (keyword.empty() && settings.inventoryLastCount != (int)inventory.size()) {
+                    settings.inventoryLastCount = (int)inventory.size();
+                    saveSettings();
+                }
             } else {
                 inventoryError = result.message;
                 notify("Inventory: " + result.message, ui::InfoKind::Error);
@@ -444,6 +452,15 @@ void App::frame() {
     updateWindowChrome();
     maintainOAuthToken();
 
+    // Column layouts change while the user drags; persist them a moment after the last change.
+    if (settings.layoutDirty) {
+        const double now = ImGui::GetTime();
+        if (layoutSaveAt_ <= 0.0) layoutSaveAt_ = now + 1.5;
+        else if (now >= layoutSaveAt_) { saveSettings(); layoutSaveAt_ = 0.0; }
+    } else {
+        layoutSaveAt_ = 0.0;
+    }
+
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
@@ -488,8 +505,10 @@ void App::drawLoadProgressBar() {
     if (!active) {
         targetSolid = targetDotted = 0.0f;         // fade out once the hold time has elapsed
     } else if (previous == 0) {
-        indeterminate = inventoryLoading;          // first load: no reference total yet
+        indeterminate = inventoryLoading;          // first load ever: no reference total yet
         targetSolid = inventoryLoading ? 0.0f : 1.0f;
+    } else if (!inventoryLoading && loaded <= previous) {
+        targetSolid = 1.0f;                        // finished (possibly with fewer items): fill the bar
     } else if (loaded <= previous) {
         targetSolid = (float)loaded / (float)previous;
     } else {

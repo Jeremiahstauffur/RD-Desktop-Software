@@ -72,7 +72,8 @@ if not defined TOOLCHAIN_NAME (
 )
 
 set "GEN_ARGS=-G Ninja"
-if defined NINJA set "GEN_ARGS=-G Ninja -DCMAKE_MAKE_PROGRAM=%NINJA%"
+REM Quoted: CLion may live under "Program Files" (path with spaces).
+if defined NINJA set "GEN_ARGS=-G Ninja "-DCMAKE_MAKE_PROGRAM=%NINJA%""
 if not defined NINJA (
     where ninja >nul 2>nul
     if errorlevel 1 (

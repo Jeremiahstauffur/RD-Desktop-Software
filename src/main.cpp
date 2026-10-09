@@ -167,9 +167,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     ImGui_ImplDX11_Init(g_device, g_context);
 
     dpi = ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd);
-    Theme::get().loadFonts(dpi);
-
-    auto app = std::make_unique<App>(hwnd, dpi);
+    auto app = std::make_unique<App>(hwnd, dpi);   // loads settings (incl. the font size)
+    Theme::get().loadFonts(dpi, app->settings.fontScale());
 
     bool done = false;
     while (!done) {
@@ -192,6 +191,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
             g_swapChain->ResizeBuffers(0, g_resizeWidth, g_resizeHeight, DXGI_FORMAT_UNKNOWN, 0);
             g_resizeWidth = g_resizeHeight = 0;
             createRenderTarget();
+        }
+
+        // Font size changed in Settings: rebuild the atlas between frames. The DX11
+        // backend re-creates its device objects (incl. the font texture) in NewFrame.
+        if (app->takeFontRebuildRequest()) {
+            ImGui_ImplDX11_InvalidateDeviceObjects();
+            Theme::get().loadFonts(dpi, app->settings.fontScale());
         }
 
         ImGui_ImplDX11_NewFrame();

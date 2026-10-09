@@ -287,6 +287,43 @@ void settings(App& app) {
         }
         ImGui::PopStyleColor();
         if (ImGui::IsItemDeactivatedAfterEdit()) app.saveSettings();
+        ui::VerticalSpace(8 * dpi);
+        ui::Divider();
+        ui::VerticalSpace(8 * dpi);
+
+        // Font size
+        ImGui::TextUnformatted("Font size");
+        ui::SecondaryText("Default size of the text across the app (headers and icons scale along).");
+        ui::VerticalSpace(4 * dpi);
+        int fontSize = app.settings.fontSize;
+        auto setFontSize = [&](int size) {
+            size = std::clamp(size, Settings::kMinFontSize, Settings::kMaxFontSize);
+            if (size == app.settings.fontSize) return;
+            app.settings.fontSize = size;
+            app.requestFontRebuild();
+            app.saveSettings();
+        };
+        ImGui::BeginDisabled(fontSize <= Settings::kMinFontSize);
+        if (ui::IconButton("fontSmaller", icons::Remove, "Smaller")) setFontSize(fontSize - 1);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(220 * dpi);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, P.control);
+        char fmt[32];
+        std::snprintf(fmt, sizeof(fmt), "%d px%s", fontSize, fontSize == Settings::kDefaultFontSize ? " (default)" : "");
+        if (ImGui::SliderInt("##fontSize", &fontSize, Settings::kMinFontSize, Settings::kMaxFontSize, fmt,
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            setFontSize(fontSize);
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(fontSize >= Settings::kMaxFontSize);
+        if (ui::IconButton("fontLarger", icons::Add, "Larger")) setFontSize(fontSize + 1);
+        ImGui::EndDisabled();
+        if (app.settings.fontSize != Settings::kDefaultFontSize) {
+            ImGui::SameLine();
+            if (ui::SubtleButton("Reset")) setFontSize(Settings::kDefaultFontSize);
+        }
         ui::EndCard();
     }
     ui::VerticalSpace(8 * dpi);

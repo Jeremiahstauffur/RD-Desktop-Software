@@ -348,11 +348,20 @@ void saveFields(App& app, long long id, const json& fields, const std::string& w
         });
 }
 
-void saveSingleField(App& app, const InventoryItem& item, const std::string& key, const std::string& text) {
+// Saves the cells edited inline in one row (one PUT for the whole row).
+void saveRowEdits(App& app, const InventoryItem& item, const DataTable::RowEdits& edits) {
+    if (edits.empty()) return;
     json fields;
     fields["name"] = item.name;   // the API requires a name on update
-    fields[key] = fieldValue(key, text);
-    saveFields(app, item.id, fields, DataTable::prettifyKey(key));
+    std::string what;
+    for (const auto& [key, text] : edits) {
+        if (!isEditableKey(key)) continue;
+        fields[key] = fieldValue(key, text);
+        if (!what.empty()) what += ", ";
+        what += DataTable::prettifyKey(key);
+    }
+    if (what.empty()) return;
+    saveFields(app, item.id, fields, what);
 }
 
 const InventoryItem* findItem(const App& app, long long id) {
@@ -1104,7 +1113,7 @@ void inventory(App& app) {
                     return true;
                 }
                 if (key == "in_stock") {
-                    int qty = it.inStock;
+                    int qty = (int)toNumber(value);   // `value` may be a staged (unsaved) edit
                     double warning = toNumber(it.fields.count("stock_warning") ? it.fields.at("stock_warning") : "");
                     ImVec4 color = P.text;
                     if (qty <= 0) color = P.danger;
@@ -1118,11 +1127,13 @@ void inventory(App& app) {
                 }
                 return false;
             };
+            // Single click on a cell edits it in place (Tab moves along the row, the row is
+            // saved when it is left); a double click opens the product page.
             opts.isEditable = [](int, const std::string& key) { return isEditableKey(key); };
-            opts.onCellEdited = [&](int row, const std::string& key, const std::string& newValue) {
-                saveSingleField(app, app.inventory[s.view[row]], key, newValue);
+            opts.onRowEdited = [&](int row, const DataTable::RowEdits& edits) {
+                saveRowEdits(app, app.inventory[s.view[row]], edits);
             };
-            opts.onRowClicked = [&](int row) {
+            opts.onRowDoubleClicked = [&](int row) {
                 const InventoryItem& it = app.inventory[s.view[row]];
                 s.openProductId = it.id;
                 loadEditor(app, s, it);

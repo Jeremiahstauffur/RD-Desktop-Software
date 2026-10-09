@@ -50,9 +50,11 @@ ImVec4 Theme::lighten(const ImVec4& c, float amount) {
                   std::clamp(c.z + amount, 0.0f, 1.0f), c.w);
 }
 
-void Theme::loadFonts(float dpiScale) {
+void Theme::loadFonts(float dpiScale, float fontScale) {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
+    // Every font is scaled by the user's font-size preference (1.0 = 15px body text).
+    dpiScale *= fontScale > 0.0f ? fontScale : 1.0f;
 
     const char* regular = firstExisting({"C:\\Windows\\Fonts\\segoeui.ttf"});
     const char* semibold = firstExisting({"C:\\Windows\\Fonts\\seguisb.ttf", "C:\\Windows\\Fonts\\segoeuib.ttf",

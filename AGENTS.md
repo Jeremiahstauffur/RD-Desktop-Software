@@ -37,7 +37,9 @@ The first configure requires internet access (FetchContent downloads ImGui + jso
 CMakeLists.txt            Single target: RD_Desktop_Software (WIN32 exe). New .cpp files MUST be added here.
 build.bat                 One-click build script (toolchain discovery, configure + build into build\, optional run).
 package.bat               build.bat + Inno Setup -> dist\RD_Desktop_Software-<ver>-setup.exe (installs Inno Setup via winget if missing).
-installer/RD_Desktop_Software.iss  Inno Setup script (per-user default, Start menu + optional desktop shortcut, uninstaller; ships exe + *.dll + RDicon.ico).
+installer/RD_Desktop_Software.iss  Inno Setup script (per-user default, Start menu + optional desktop shortcut, uninstaller; ships exe + *.dll + RDicon.ico;
+                          fixed AppId + UsePrevious* = in-place updates, [Code] reads the previous version/dir from the uninstall key).
+                          Version lives in package.bat (`VERSION`) and the .iss fallback `AppVersion`; bump both per release.
 installer/RDicon.ico      App icon (generated from RDicon.png by tools\make_icon.ps1); embedded via src/app.rc, SetupIconFile, shortcut IconFilename.
 RDicon.png                Icon source image (51x53). Replace it and re-run tools\make_icon.ps1 to change the icon.
 tools/make_icon.ps1       PNG -> multi-size PNG-compressed .ico (System.Drawing, no external tool).
@@ -57,11 +59,14 @@ src/
   pages/RecordViewer.cpp  Generic "show every field of a JSON record" viewer.
   pages/CommunicationPage.cpp  SMS inbox + send-SMS form.
   pages/SearchPage.cpp    Global search results across products/invoices/tickets/customers.
-  pages/SettingsPage.cpp  API key / OAuth2 credentials, theme, accent colour.
-  DataTable.h/.cpp        Reusable ImGui table: column visibility, reorder, resize, sort, multi-select, click-to-edit.
+  pages/SettingsPage.cpp  API key / OAuth2 credentials, theme, accent colour, font size.
+  DataTable.h/.cpp        Reusable ImGui table: column visibility, reorder, resize, sort, multi-select; layout persisted by
+                          column key in Settings::tableLayouts (bindSettings); single-click inline editing with Tab/Shift+Tab
+                          along the row (staged, one onRowEdited per row), double-click = onRowDoubleClicked.
   Widgets.h/.cpp          Custom Win11-styled ImGui widgets (buttons, inputs, toggles, SuggestField/ComboField, PillButton).
   Theme.h/.cpp            Dark/light theme + accent colour application.
-  Settings.h/.cpp         Load/save settings.json (OAuth tokens, suggested-price formula `suggestedPrice()`).
+  Settings.h/.cpp         Load/save settings.json (OAuth tokens, theme/accent/fontSize, TableLayout per table id,
+                          inventoryLastCount for the progress bar, suggested-price formula `suggestedPrice()`).
   Http.h/.cpp             WinHTTP wrapper (GET/POST/PUT/DELETE, headers, query params).
   RepairDeskApi.h/.cpp    Typed wrappers over the RepairDesk Public API; OAuth2 token exchange/refresh;
                           `Lookups` reference data (manufacturers/devices/suppliers/tax classes/locations) and
@@ -92,6 +97,16 @@ src/
   device, supplier, tax class and location; never hand-build id mappings in a page. Pass a `WriteNotes`
   and surface its `messages` to the user (dropped unknown values, created brands/models).
 - Colours/sizes come from `Theme.*`; do not hard-code accent colours in pages.
+- **User preferences live in `settings.json`, nowhere else.** Anything the user customises (theme, accent,
+  font size, table layouts, credentials) goes into `Settings` so an installer update keeps it. Table
+  layouts are keyed by column *key* (not index) so adding/removing columns in a release never scrambles
+  them. Don't rely on ImGui's own `layout.ini` table settings for persistence — `DataTable` overrides them.
+- Fonts are rebuilt only between frames: a page that changes the font size calls
+  `app.requestFontRebuild()`; `main.cpp` invalidates the DX11 device objects and calls
+  `Theme::loadFonts(dpi, settings.fontScale())` before the next `NewFrame`. Never call `loadFonts` mid-frame.
+- Table editing: pages supply `isEditable` + `onRowEdited` (one callback with all changed cells of the row)
+  and `onRowDoubleClicked` for the detail page. Don't add per-cell save callbacks back — the row-at-once
+  commit is what makes Tab-through editing a single API request.
 - Adding a new page: declare in `Pages.h`, implement in `src/pages/`, register in `App.cpp`
   navigation, and add the `.cpp` to `CMakeLists.txt`.
 
@@ -126,6 +141,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-09 | v1.1.0: (1) installer updates in place — fixed `AppId`, `UsePreviousPrivileges/AppDir/Tasks`, `DirExistsWarning=no`, `[Code]` reads previous `DisplayVersion`/`InstallLocation` from HKCU/HKLM, skips the folder page and lists the kept preferences on the Ready page; `package.bat`/`.iss` version 1.1.0. (2) Preferences persisted in `settings.json`: `fontSize`, `inventoryLastCount`, `tableLayouts` (order/width/visibility/sort by column key) via `DataTable::bindSettings` + `applySavedLayout` (writes `ImGuiTableSettings`, requests reload) / `captureLayout` (debounced save in `App::frame`). (3) Settings → Appearance font-size slider 11–24 px (`Theme::loadFonts(dpi, fontScale)`, atlas rebuilt between frames via `App::requestFontRebuild`). (4) Inventory table: single click edits a cell in place, Tab/Shift+Tab stage edits along the row, Enter/click-away/end of row commit one `saveRowEdits` PUT, Esc discards; double-click opens the product page (`onRowDoubleClicked`; `onCellEdited` removed). (5) Progress bar: 100 % mark falls back to the persisted previous count on the first load after start-up, fills when the load finishes early. `build.bat` quotes `-DCMAKE_MAKE_PROGRAM` (CLion under `Program Files`). | Done (verified: release build; app starts and writes the new keys; silent 1.0.0 → 1.1.0 update keeps dir/registry entry/settings, uninstall clean). Inline editing / Tab / font size / progress bar need a manual pass against live data |
 | 2026-10-08 | App icon from `RDicon.png`: `tools\make_icon.ps1` pads to square and writes `installer\RDicon.ico` (16–256 px, PNG entries); `src\app.rc` + `resource.h` embed it (CMake `LANGUAGES CXX RC`), `main.cpp` sets `hIcon`/`hIconSm` so taskbar + title bar show it; `.iss` gained `SetupIconFile`, ships `RDicon.ico` and uses it as `IconFilename` for Start menu/desktop shortcuts. `dist\` installer rebuilt. | Done (verified: exe/setup icon extract OK, silent install → shortcuts point at `{app}\RDicon.ico`, uninstall clean) |
 | 2026-10-08 | Installer committed + `libwinpthread-1.dll` fix: `dist/` removed from `.gitignore` so the setup exe ships with the repo (README "Installing (no build needed)"); CMake copies `libwinpthread-1.dll` from the compiler's dir next to the exe post-build and the `.iss` packages `*.dll` beside the exe. Static linking of winpthread was tried (`-static`, `-Bstatic -lpthread`, `-mcrtdll=ucrt`) and fails with CLion's bundled MinGW 15.2 — see §5. | Done (verified: installed app starts with `PATH` reduced to System32; uninstall clean) |
 | 2026-10-08 | Real installer: `installer\RD_Desktop_Software.iss` (Inno Setup 6; per-user default with all-users option, Start menu + optional desktop shortcut, uninstaller that offers to delete `%APPDATA%\RD Desktop Software`, `CloseApplications`) and `package.bat` (runs `build.bat`, finds/installs ISCC via winget, `<version>`/`nobuild` args, output `dist\RD_Desktop_Software-<ver>-setup.exe`). `dist/` git-ignored; README "Creating an installer" section. | Done (verified: silent install → files + Start menu shortcut, silent uninstall → clean, settings kept) |
@@ -160,6 +176,11 @@ Newest entries first. One line per task: date, what changed, status.
 - [ ] Loopback listener (`http::waitForLoopbackRedirect`) accepts a single IPv4 connection and has no
       `recv` timeout; consider dual-stack (`::1`) listening, skipping favicon/preconnect requests and
       parsing `code` from a POST body if RepairDesk ever switches to `response_mode=form_post`.
+- [ ] Inline table editing uses a plain text field for every editable column; suggest/combo cells
+      (category, tax class) and validation of numeric input could reuse the product-page widgets.
+- [ ] Only the inventory table is editable; Tickets/Invoices/Customers still open the record viewer on a
+      single click (`onRowClicked`), which is intended but inconsistent with the inventory double-click.
+- [ ] Non-square `RDicon.png`; a 256×256 source would remove the blur at large icon sizes.
 
 ## 5. Lessons learned
 
@@ -244,6 +265,31 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   uninstaller hung a silent uninstall; guard such prompts with `not UninstallSilent` (or
   `WizardSilent` in the installer). Inno Setup installed via winget lands in
   `%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`, not `Program Files (x86)`.
+- **Inno Setup updates are driven by `AppId`.** The same `AppId` + `UsePreviousAppDir`/`UsePreviousPrivileges`
+  make a newer setup reuse folder and install mode and *replace* the Add/Remove entry; a changed `AppId`
+  silently creates a second installation. The previous version is in
+  `HKCU|HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\<AppId>_is1` (`DisplayVersion`,
+  `InstallLocation`); `UsePreviousPrivileges` only works when `AppId` has no constants. Test updates with
+  two installers of different versions (`package.bat 1.0.0`, `package.bat 1.1.0`) silently into a scratch
+  `/DIR`, then check the registry key and that `settings.json`'s hash is unchanged.
+- **ImGui table settings are per column *index*.** `ImGuiTableSettings` only stores `Index`/`DisplayOrder`,
+  so a column added by `discoverColumns` or a new release shifts every saved width/order. `DataTable`
+  therefore keeps its own key-based `TableLayout` in `Settings`, and before `BeginTable` writes it into
+  `TableSettingsFindByID/Create` + `table->IsSettingsRequestLoad = true` (`SettingsOffset = -1`) so the
+  live table reloads; `TableLoadSettings` ignores entries whose `ColumnsCount` differs, so set it to the
+  real count. `RefScale` must be stored too or a font-size change does not rescale the widths.
+- **Tab inside an active `InputText` triggers ImGui's nav tabbing** (focus jumps to the next widget and
+  the field deactivates). To own Tab, call `ImGui::SetKeyOwner(ImGuiKey_Tab, GetItemID())` every frame
+  while the item is active (`NavUpdateTabbing` tests `ImGuiKeyOwner_NoOwner`) and read the key with
+  `IsKeyPressed`. The `\t` char never reaches the buffer without `AllowTabInput`.
+- **Row clicks in `DataTable` are detected geometrically** (`table->RowPosY1/Y2` × `WorkRect`, clipped to
+  `BgClipRect`, column from `HoveredColumnBody`, `IsWindowHovered(..AllowWhenBlockedByActiveItem)`), not via
+  `IsItemHovered` on the row selectable — an active text field would otherwise swallow the hover and
+  click-away/next-cell clicks could not be told apart. A double click cancels the edit the first click
+  started; `IsMouseClicked && !IsMouseDoubleClicked` is the single-click test.
+- **Rebuilding the font atlas needs the backend's cooperation.** Call `ImGui_ImplDX11_InvalidateDeviceObjects()`
+  then `Theme::loadFonts(...)` *before* `ImGui_ImplDX11_NewFrame()`; the backend recreates the font
+  texture on the next frame. Doing it inside a draw function asserts.
 
 ## 6. Prompt wishes
 
@@ -294,6 +340,13 @@ was ambiguous, record here what information would have helped.
 - (2026-10-08) For icon requests, supply a square image of at least 256×256 px (or an `.ico`); the given
   51×53 PNG had to be padded and upscaled. Also say whether only the installer/shortcuts or also the
   running window (taskbar/title bar) should use it — here both were done.
+- (2026-10-09) For multi-part requests (installer update + settings + table editing + progress bar) a
+  short numbered list with the expected behaviour of each part helps; the version number to ship
+  (`1.1.0` was chosen) and whether a new entry should appear in Add/Remove Programs should be stated.
+  For table-editing changes say which columns must be editable, what Tab should do at the end of the row
+  (here: save) and whether Esc should discard the whole row or just the current cell (here: whole row).
+  For "progress bar does not fill" say whether it was the very first load after start-up (no previous
+  count known) or a later refresh — that was the actual cause here.
 
 ---
 

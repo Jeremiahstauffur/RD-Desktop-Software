@@ -24,6 +24,9 @@ public:
     Settings settings;
     void applyTheme();                 // re-applies colours from `settings`
     void saveSettings();
+    // Font size changed: the main loop rebuilds the atlas before the next frame.
+    void requestFontRebuild() { fontsDirty_ = true; }
+    bool takeFontRebuildRequest() { bool d = fontsDirty_; fontsDirty_ = false; return d; }
 
     // API client carrying the current credentials and the cached reference data.
     RepairDeskApi api() const {
@@ -120,4 +123,6 @@ private:
     HWND hwnd_;
     std::vector<Toast> toasts_;
     bool themeDirty_ = true;
+    bool fontsDirty_ = false;
+    double layoutSaveAt_ = 0.0;        // debounce for persisting table layouts
 };

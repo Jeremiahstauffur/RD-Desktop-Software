@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
+#include <cmath>
+#include <numeric>
 #include <unordered_set>
 
 #include <cfloat>
@@ -12,7 +15,37 @@
 #include "Theme.h"
 #include "Widgets.h"
 
+namespace {
+
+constexpr float kSelectionColWidth = 44.0f;
+constexpr float kGearColWidth = 40.0f;
+
+bool sameLayout(const TableLayout& a, const TableLayout& b) {
+    if (a.columns.size() != b.columns.size() || a.sortKey != b.sortKey || a.sortAscending != b.sortAscending) return false;
+    if (std::abs(a.refScale - b.refScale) > 0.01f) return false;
+    for (size_t i = 0; i < a.columns.size(); ++i) {
+        const TableLayout::Column& x = a.columns[i];
+        const TableLayout::Column& y = b.columns[i];
+        if (x.key != y.key || x.visible != y.visible || std::abs(x.width - y.width) > 0.5f) return false;
+    }
+    return true;
+}
+
+const std::string& recordId(const FlatRecord& rec) {
+    static const std::string empty;
+    auto it = rec.find("id");
+    return it == rec.end() ? empty : it->second;
+}
+
+} // namespace
+
+Settings* DataTable::settings_ = nullptr;
+
 DataTable::DataTable(std::string id) : id_(std::move(id)) {}
+
+void DataTable::bindSettings(Settings* settings) {
+    settings_ = settings;
+}
 
 std::string DataTable::prettifyKey(const std::string& key) {
     std::string out;
@@ -95,6 +128,196 @@ void DataTable::discoverColumns(const std::vector<FlatRecord>& records) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Layout persistence
+// ---------------------------------------------------------------------------
+
+// Writes the saved (key based) layout into ImGui's table settings storage for this
+// table and asks the table to reload it. ImGui itself only stores columns by index,
+// which breaks as soon as the API or a newer version adds or removes a column.
+void DataTable::applySavedLayout(int firstDataCol, int totalCols, bool selectable) {
+    const TableLayout* src = nullptr;
+    if (settings_) {
+        auto it = settings_->tableLayouts.find(id_);
+        if (it != settings_->tableLayouts.end()) src = &it->second;
+    } else if (!lastLayout_.columns.empty()) {
+        src = &lastLayout_;
+    }
+    if (!src || src->columns.empty()) return;
+    if (src != &lastLayout_) lastLayout_ = *src;   // applying the saved layout is not a change
+
+    const int dataColumns = (int)columns_.size();
+    const ImGuiID id = ImGui::GetID(id_.c_str());
+
+    ImGuiTableSettings* settings = ImGui::TableSettingsFindByID(id);
+    if (settings && settings->ColumnsCountMax < totalCols) {
+        settings->ID = 0;   // too small for this column count: ditch it, like ImGui does
+        settings = nullptr;
+    }
+    if (!settings) settings = ImGui::TableSettingsCreate(id, totalCols);
+    settings->ColumnsCount = (ImGuiTableColumnIdx)totalCols;
+    settings->SaveFlags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
+                          ImGuiTableFlags_Sortable;
+    settings->RefScale = src->refScale;
+    settings->WantApply = true;
+    ImGuiTableColumnSettings* cs = settings->GetColumnSettings();
+    for (int n = 0; n < settings->ColumnsCountMax; ++n) cs[n] = ImGuiTableColumnSettings();
+
+    // Saved position of each column key (unknown keys keep their natural order at the end).
+    std::vector<int> rank(dataColumns, INT_MAX);
+    std::vector<const TableLayout::Column*> saved(dataColumns, nullptr);
+    for (size_t pos = 0; pos < src->columns.size(); ++pos) {
+        for (int i = 0; i < dataColumns; ++i) {
+            if (columns_[i].key == src->columns[pos].key) {
+                rank[i] = (int)pos;
+                saved[i] = &src->columns[pos];
+                break;
+            }
+        }
+    }
+    std::vector<int> order(dataColumns);
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return rank[a] < rank[b]; });
+
+    int display = firstDataCol;
+    for (int i : order) {
+        ImGuiTableColumnSettings& c = cs[firstDataCol + i];
+        c.Index = (ImGuiTableColumnIdx)(firstDataCol + i);
+        c.DisplayOrder = (ImGuiTableColumnIdx)(display++);
+        c.WidthOrWeight = saved[i] && saved[i]->width > 0.0f ? saved[i]->width : columns_[i].width;
+        c.IsEnabled = (saved[i] ? saved[i]->visible : columns_[i].defaultVisible) ? 1 : 0;
+        c.IsStretch = 0;
+        if (!src->sortKey.empty() && columns_[i].key == src->sortKey) {
+            c.SortOrder = 0;
+            c.SortDirection = src->sortAscending ? ImGuiSortDirection_Ascending : ImGuiSortDirection_Descending;
+        }
+    }
+    if (selectable) {
+        ImGuiTableColumnSettings& c = cs[0];
+        c.Index = 0;
+        c.DisplayOrder = 0;
+        c.WidthOrWeight = kSelectionColWidth;
+        c.IsEnabled = 1;
+    }
+    {
+        ImGuiTableColumnSettings& c = cs[totalCols - 1];
+        c.Index = (ImGuiTableColumnIdx)(totalCols - 1);
+        c.DisplayOrder = (ImGuiTableColumnIdx)(totalCols - 1);
+        c.WidthOrWeight = kGearColWidth;
+        c.IsEnabled = 1;
+    }
+
+    // An already created table must re-read its settings; a new one loads them anyway.
+    if (ImGuiTable* table = ImGui::TableFindByID(id)) {
+        table->IsSettingsRequestLoad = true;
+        table->SettingsOffset = -1;
+    }
+}
+
+// Reads order/width/visibility/sort of the live table (must be called while the
+// table is current) and stores it in the bound settings when something changed.
+void DataTable::captureLayout(int firstDataCol) {
+    ImGuiTable* table = ImGui::GetCurrentTable();
+    if (!table) return;
+    const int dataColumns = (int)columns_.size();
+
+    TableLayout layout;
+    layout.refScale = table->RefScale;
+    std::vector<std::pair<int, int>> byOrder;   // (display order, data column index)
+    byOrder.reserve(dataColumns);
+    for (int i = 0; i < dataColumns; ++i) {
+        const ImGuiTableColumn& c = table->Columns[firstDataCol + i];
+        byOrder.emplace_back((int)c.DisplayOrder, i);
+        if (c.SortOrder == 0) {
+            layout.sortKey = columns_[i].key;
+            layout.sortAscending = c.SortDirection != ImGuiSortDirection_Descending;
+        }
+    }
+    std::sort(byOrder.begin(), byOrder.end());
+    for (const auto& [order, i] : byOrder) {
+        const ImGuiTableColumn& c = table->Columns[firstDataCol + i];
+        TableLayout::Column col;
+        col.key = columns_[i].key;
+        col.width = c.WidthRequest > 0.0f ? c.WidthRequest : columns_[i].width;
+        col.visible = c.IsUserEnabledNextFrame;
+        layout.columns.push_back(std::move(col));
+    }
+
+    if (sameLayout(layout, lastLayout_)) return;
+    lastLayout_ = layout;
+    if (settings_) {
+        settings_->tableLayouts[id_] = std::move(layout);
+        settings_->layoutDirty = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inline editing
+// ---------------------------------------------------------------------------
+
+void DataTable::cancelEdit() {
+    editRow_ = -1;
+    editKey_.clear();
+    editBuffer_.clear();
+    editOriginal_.clear();
+    editRowId_.clear();
+    editFocus_ = false;
+    pending_.clear();
+}
+
+const std::string* DataTable::pendingValue(const std::string& key) const {
+    for (const auto& [k, v] : pending_) {
+        if (k == key) return &v;
+    }
+    return nullptr;
+}
+
+// Moves the text of the cell being edited into the staged changes of the row.
+void DataTable::stageCurrentCell(const std::string& originalValue) {
+    if (editKey_.empty()) return;
+    for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+        if (it->first == editKey_) {
+            pending_.erase(it);
+            break;
+        }
+    }
+    if (editBuffer_ != originalValue) pending_.emplace_back(editKey_, editBuffer_);
+    editKey_.clear();
+}
+
+void DataTable::beginEdit(int row, const std::string& key, const std::string& value, const std::string& rowId) {
+    if (editRow_ != row) pending_.clear();
+    editRow_ = row;
+    editRowId_ = rowId;
+    editKey_ = key;
+    editBuffer_ = value;
+    editOriginal_ = value;
+    editFocus_ = true;
+}
+
+// Sends the staged changes of the edited row to the owner and ends editing. The row
+// is looked up by its "id" field in case the data was re-sorted meanwhile.
+void DataTable::commitEdits(int rowCount, const std::function<const FlatRecord&(int)>& rowAt, const DrawOptions& options) {
+    int row = editRow_;
+    RowEdits edits = std::move(pending_);
+    const std::string rowId = editRowId_;
+    cancelEdit();
+    if (row < 0 || edits.empty() || !options.onRowEdited) return;
+
+    if (!rowId.empty() && (row >= rowCount || recordId(rowAt(row)) != rowId)) {
+        row = -1;
+        for (int r = 0; r < rowCount; ++r) {
+            if (recordId(rowAt(r)) == rowId) { row = r; break; }
+        }
+    }
+    if (row < 0 || row >= rowCount) return;
+    options.onRowEdited(row, edits);
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+
 void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& rowAt, const DrawOptions& options) {
     const Palette& P = Theme::get().palette();
     const Fonts& F = Theme::get().fonts();
@@ -110,6 +333,22 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
     if (totalCols > IMGUI_TABLE_MAX_COLUMNS - 1) {
         ImGui::TextColored(P.danger, "Too many columns to display (%d).", totalCols);
         return;
+    }
+
+    const bool canEdit = options.isEditable && options.onRowEdited;
+    if (editRow_ >= rowCount) cancelEdit();
+    const bool wasEditing = editRow_ >= 0;
+
+    // (Re)apply the persisted layout when the table is first drawn or its column set changed.
+    {
+        std::vector<std::string> keys;
+        keys.reserve(columns_.size());
+        for (const ColumnSpec& c : columns_) keys.push_back(c.key);
+        if (layoutPending_ || keys != appliedKeys_) {
+            applySavedLayout(firstDataCol, totalCols, selectable);
+            appliedKeys_ = std::move(keys);
+            layoutPending_ = false;
+        }
     }
 
     ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
@@ -132,7 +371,7 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
         ImGui::TableSetupColumn("##select", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoReorder |
                                                 ImGuiTableColumnFlags_NoHide | ImGuiTableColumnFlags_NoResize |
                                                 ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoHeaderLabel,
-                                44.0f);
+                                kSelectionColWidth);
     }
     for (int i = 0; i < dataColumns; ++i) {
         ImGuiTableColumnFlags cf = ImGuiTableColumnFlags_WidthFixed;
@@ -142,7 +381,7 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
     ImGui::TableSetupColumn("##gear", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoReorder |
                                           ImGuiTableColumnFlags_NoHide | ImGuiTableColumnFlags_NoResize |
                                           ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoHeaderLabel,
-                            40.0f);
+                            kGearColWidth);
     ImGui::TableSetupScrollFreeze(selectable ? 1 : 0, 1);
 
     // Sorting -------------------------------------------------------------
@@ -201,6 +440,24 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
     }
 
     // Body ----------------------------------------------------------------
+    ImGuiTable* table = ImGui::GetCurrentTable();
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    // Clicks are detected geometrically (the row selectable, the cells and an active
+    // text field all compete for the hover otherwise). Allowed while a cell editor is
+    // active so that one click can leave one cell and enter another.
+    const bool tableHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    const int hoveredCol = tableHovered ? table->HoveredColumnBody : -1;
+    const bool mouseClicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    const bool mouseDoubleClicked = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+    const bool shiftDown = ImGui::GetIO().KeyShift;
+
+    bool editRowDrawn = false;
+    int clickRow = -1, clickDataCol = -1;    // single click on an editable cell (applied after the loop)
+    int doubleClickRow = -1;
+    int tabDir = 0;                          // +1 / -1 when Tab / Shift+Tab was pressed in the editor
+    bool editEnter = false, editEscape = false, editDeactivated = false;
+    static const std::string empty;
+
     ImGuiListClipper clipper;
     clipper.Begin(rowCount, options.rowHeight);
     while (clipper.Step()) {
@@ -209,23 +466,30 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
             ImGui::TableNextRow(0, options.rowHeight);
             ImGui::PushID(row);
 
+            const bool editingRow = editRow_ == row;
+            if (editingRow) editRowDrawn = true;
+
             bool isSelected = selectable && (*options.selection)[row];
             if (isSelected) {
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, Theme::u32(Theme::withAlpha(P.accent, 0.14f)));
             }
 
-            // Invisible full-row selectable for hover highlight / row click.
-            bool rowClicked = false;
-            bool cellTextClicked = false;
+            // Row hit test: the row's vertical span clipped to the (unfrozen) body area.
+            ImRect rowRect(table->WorkRect.Min.x, table->RowPosY1, table->WorkRect.Max.x, table->RowPosY2);
+            rowRect.ClipWith(table->BgClipRect);
+            const bool rowHovered = tableHovered && hoveredCol != selectionCol && hoveredCol != gearCol &&
+                                    hoveredCol != -1 && rowRect.Contains(mouse);
+            const bool rowDoubleClicked = rowHovered && mouseDoubleClicked;
+            const bool rowClicked = rowHovered && mouseClicked && !mouseDoubleClicked;
+            if (rowDoubleClicked) doubleClickRow = row;
+
+            // Invisible full-row selectable for the hover highlight.
             int anchorCol = selectable ? selectionCol : firstDataCol;
             if (ImGui::TableSetColumnIndex(anchorCol)) {
                 ImVec2 cursor = ImGui::GetCursorPos();
                 ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
-                if (ImGui::Selectable("##row", false,
-                                      ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
-                                      ImVec2(0, options.rowHeight))) {
-                    rowClicked = true;
-                }
+                ImGui::Selectable("##row", false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
+                                  ImVec2(0, options.rowHeight));
                 ImGui::PopStyleColor();
                 ImGui::SetCursorPos(cursor);
                 if (selectable) {
@@ -236,72 +500,139 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
                 }
             }
 
+            bool clickedEditableCell = false;
             for (int i = 0; i < dataColumns; ++i) {
                 if (!ImGui::TableSetColumnIndex(firstDataCol + i)) continue;
                 const std::string& key = columns_[i].key;
                 auto it = rec.find(key);
-                static const std::string empty;
-                const std::string& value = it != rec.end() ? it->second : empty;
+                const std::string& recordValue = it != rec.end() ? it->second : empty;
+                const std::string* staged = editingRow ? pendingValue(key) : nullptr;
+                const std::string& value = staged ? *staged : recordValue;
 
-                const bool editable = options.isEditable && options.onCellEdited && options.isEditable(row, key);
-                const bool editingThis = editable && editRow_ == row && editKey_ == key;
+                const bool editable = canEdit && options.isEditable(row, key);
+                const bool cellHovered = rowHovered && hoveredCol == firstDataCol + i;
+                if (rowClicked && cellHovered && editable) {
+                    clickRow = row;
+                    clickDataCol = i;
+                    clickedEditableCell = true;
+                }
 
-                if (editingThis) {
+                if (editingRow && editKey_ == key) {
                     // Inline editor
                     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (options.rowHeight - ImGui::GetFrameHeight()) * 0.5f);
                     ImGui::SetNextItemWidth(-FLT_MIN);
+                    const bool firstFrame = editFocus_;
                     if (editFocus_) {
                         ImGui::SetKeyboardFocusHere();
                         editFocus_ = false;
                     }
+                    ImGui::PushID(i);
                     ImGui::PushStyleColor(ImGuiCol_FrameBg, P.control);
                     ImGui::PushStyleColor(ImGuiCol_Border, P.accent);
-                    bool commit = ImGui::InputText("##edit", &editBuffer_,
-                                                   ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+                    bool entered = ImGui::InputText("##edit", &editBuffer_,
+                                                    ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
                     ImGui::PopStyleColor(2);
-                    bool cancelled = ImGui::IsKeyPressed(ImGuiKey_Escape);
-                    bool lostFocus = !ImGui::IsItemActive() && !ImGui::IsItemFocused() && !editFocus_ &&
-                                     ImGui::IsItemDeactivated();
-                    if (commit || (lostFocus && !cancelled)) {
-                        if (editBuffer_ != value) options.onCellEdited(row, key, editBuffer_);
-                        cancelEdit();
-                    } else if (cancelled) {
-                        cancelEdit();
+                    if (firstFrame && !ImGui::IsItemVisible()) ImGui::SetScrollHereX(0.5f);
+                    const bool active = ImGui::IsItemActive();
+                    if (active) {
+                        // Own the Tab key so ImGui's keyboard navigation does not move the focus itself.
+                        ImGui::SetKeyOwner(ImGuiKey_Tab, ImGui::GetItemID());
+                        if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) tabDir = shiftDown ? -1 : 1;
                     }
+                    ImGui::PopID();
+                    editEnter = entered;
+                    editEscape = ImGui::IsItemDeactivated() && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+                    editDeactivated = ImGui::IsItemDeactivated() && !entered && !editEscape && !firstFrame;
                     continue;
                 }
 
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (options.rowHeight - ImGui::GetTextLineHeight()) * 0.5f);
                 ImVec2 textStart = ImGui::GetCursorScreenPos();
+                if (staged) ImGui::PushStyleColor(ImGuiCol_Text, P.accent);   // changed, not saved yet
                 if (!(options.cellRenderer && options.cellRenderer(row, key, value))) {
                     ImGui::TextUnformatted(value.empty() && editable ? "\xE2\x80\x94" : value.c_str());
                 }
-                if (editable) {
-                    // Clickable text area: at least a reasonable minimum so empty cells can be clicked.
+                if (staged) ImGui::PopStyleColor();
+                if (editable && cellHovered) {
                     ImVec2 textEnd = ImGui::GetItemRectMax();
-                    float minW = 60.0f;
-                    ImVec2 hitMax(ImMax(textEnd.x, textStart.x + minW), textEnd.y);
-                    bool hovered = ImGui::IsMouseHoveringRect(textStart, hitMax) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
-                    if (hovered) {
-                        ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
-                        ImGui::GetWindowDrawList()->AddLine(ImVec2(textStart.x, hitMax.y + 1), ImVec2(hitMax.x, hitMax.y + 1),
-                                                            Theme::u32(P.accentLine), 1.0f);
-                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                            editRow_ = row;
-                            editKey_ = key;
-                            editBuffer_ = value;
-                            editFocus_ = true;
-                            cellTextClicked = true;
-                        }
-                    }
-                } else if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) &&
+                    ImVec2 hitMax(ImMax(textEnd.x, textStart.x + 60.0f), textEnd.y);
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+                    ImGui::GetWindowDrawList()->AddLine(ImVec2(textStart.x, hitMax.y + 1), ImVec2(hitMax.x, hitMax.y + 1),
+                                                        Theme::u32(P.accentLine), 1.0f);
+                } else if (!editable && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) &&
                            ImGui::CalcTextSize(value.c_str()).x > ImGui::GetColumnWidth()) {
                     ui::Tooltip(value.c_str());
                 }
             }
-            if (rowClicked && !cellTextClicked && options.onRowClicked) options.onRowClicked(row);
+
+            if (rowClicked && !clickedEditableCell && !wasEditing && options.onRowClicked) options.onRowClicked(row);
             ImGui::PopID();
         }
+    }
+
+    // Editing transitions (after the loop so row indices and callbacks stay consistent)
+    if (doubleClickRow >= 0) {
+        // The first click of the pair may have started an edit: drop it and open the row.
+        cancelEdit();
+        clickRow = -1;
+        if (options.onRowDoubleClicked) options.onRowDoubleClicked(doubleClickRow);
+    } else if (editRow_ >= 0) {
+        if (!editRowDrawn) {
+            // Scrolled out of view: keep what was typed and save it.
+            stageCurrentCell(editOriginal_);
+            commitEdits(rowCount, rowAt, options);
+        } else if (editEscape) {
+            cancelEdit();
+        } else if (editEnter) {
+            stageCurrentCell(editOriginal_);
+            commitEdits(rowCount, rowAt, options);
+        } else if (tabDir != 0) {
+            // Next / previous visible editable column of this row in display order.
+            std::vector<int> editableCols;
+            for (int d = 0; d < table->ColumnsCount; ++d) {
+                int n = table->DisplayOrderToIndex[d];
+                if (n < firstDataCol || n >= gearCol) continue;
+                if (!(ImGui::TableGetColumnFlags(n) & ImGuiTableColumnFlags_IsEnabled)) continue;
+                int i = n - firstDataCol;
+                if (options.isEditable(editRow_, columns_[i].key)) editableCols.push_back(i);
+            }
+            int pos = -1;
+            for (size_t k = 0; k < editableCols.size(); ++k) {
+                if (columns_[editableCols[k]].key == editKey_) { pos = (int)k; break; }
+            }
+            const int next = pos + tabDir;
+            stageCurrentCell(editOriginal_);
+            if (pos < 0 || next < 0 || next >= (int)editableCols.size()) {
+                commitEdits(rowCount, rowAt, options);   // end of the row: save
+            } else {
+                const int row = editRow_;
+                const std::string& key = columns_[editableCols[next]].key;
+                const FlatRecord& rec = rowAt(row);
+                auto it = rec.find(key);
+                const std::string* staged = pendingValue(key);
+                beginEdit(row, key, staged ? *staged : (it != rec.end() ? it->second : empty), recordId(rec));
+            }
+        } else if (clickRow == editRow_ && clickDataCol >= 0 && columns_[clickDataCol].key != editKey_) {
+            // Another cell of the same row: keep the changes staged and continue there.
+            stageCurrentCell(editOriginal_);
+            const int row = editRow_;
+            const std::string& key = columns_[clickDataCol].key;
+            const FlatRecord& rec = rowAt(row);
+            auto it = rec.find(key);
+            const std::string* staged = pendingValue(key);
+            beginEdit(row, key, staged ? *staged : (it != rec.end() ? it->second : empty), recordId(rec));
+            clickRow = -1;
+        } else if (editDeactivated) {
+            // Clicked away (another row, elsewhere in the table or outside): save the row.
+            stageCurrentCell(editOriginal_);
+            commitEdits(rowCount, rowAt, options);
+        }
+    }
+    if (clickRow >= 0 && clickDataCol >= 0 && editRow_ < 0) {
+        const FlatRecord& rec = rowAt(clickRow);
+        const std::string& key = columns_[clickDataCol].key;
+        auto it = rec.find(key);
+        beginEdit(clickRow, key, it != rec.end() ? it->second : empty, recordId(rec));
     }
 
     // Columns popup -------------------------------------------------------
@@ -335,6 +666,8 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
         if (pendingToggles_[i] == 1) ImGui::TableSetColumnEnabled(firstDataCol + i, true);
         else if (pendingToggles_[i] == 2) ImGui::TableSetColumnEnabled(firstDataCol + i, false);
     }
+
+    captureLayout(firstDataCol);
 
     ImGui::EndTable();
     ImGui::PopStyleColor(2);

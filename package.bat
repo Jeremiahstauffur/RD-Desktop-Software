@@ -12,7 +12,7 @@ REM     winget install JRSoftware.InnoSetup
 REM ---------------------------------------------------------------------------
 cd /d "%~dp0"
 
-set "VERSION=1.0.0"
+set "VERSION=1.1.0"
 set "DO_BUILD=1"
 for %%A in (%*) do (
     if /i "%%A"=="nobuild" (set "DO_BUILD=0") else set "VERSION=%%A"

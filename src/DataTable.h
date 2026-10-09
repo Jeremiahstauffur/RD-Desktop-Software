@@ -2,11 +2,13 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <imgui.h>
 
 #include "RepairDeskApi.h"
+#include "Settings.h"
 
 struct ColumnSpec {
     std::string key;            // key in the FlatRecord
@@ -21,13 +23,21 @@ struct ColumnSpec {
 // * Columns can be dragged to reorder and resized by dragging the right edge.
 // * A gear button at the far right of the header opens a checkbox list that
 //   toggles each column on or off.
+// * Column order, widths and visibility are restored from / persisted to the
+//   bound `Settings` (by field key, see `bindSettings`).
 // * Optional selection checkbox column with a header "select all" checkbox.
-// * Optional click-to-edit cells: clicking a cell's text turns it into a text
-//   field (Enter commits, Escape cancels); clicking the row elsewhere fires
-//   `onRowClicked`.
+// * Optional inline editing: a single click on an editable cell turns it into a
+//   text field. Tab / Shift+Tab move to the next / previous editable column of
+//   the same row (the edited values are staged), Enter or clicking elsewhere
+//   commits every staged change of the row at once through `onRowEdited`,
+//   Escape discards them. A double click on a row fires `onRowDoubleClicked`,
+//   a single click on a non-editable cell fires `onRowClicked`.
 class DataTable {
 public:
     explicit DataTable(std::string id);
+
+    // Tables read their saved layout from and write changes into these settings.
+    static void bindSettings(Settings* settings);
 
     // Declares the preferred columns (shown first, in this order). Columns for
     // any additional keys found in `records` are appended (hidden by default)
@@ -39,16 +49,19 @@ public:
     // Returns true when the "cell" was handled by the callback; otherwise the
     // table renders the raw text value.
     using CellRenderer = std::function<bool(int row, const std::string& key, const std::string& value)>;
+    // Staged edits of one row: (key, new value) in the order they were made.
+    using RowEdits = std::vector<std::pair<std::string, std::string>>;
 
     struct DrawOptions {
         bool selectable = false;                 // show checkbox column
         std::vector<bool>* selection = nullptr;  // sized to row count when selectable
         CellRenderer cellRenderer;
-        std::function<void(int row)> onRowClicked;
-        // Inline editing. When `isEditable` returns true for a cell, clicking its
-        // text starts editing and `onCellEdited` receives the committed value.
+        std::function<void(int row)> onRowClicked;        // single click (not on an editable cell)
+        std::function<void(int row)> onRowDoubleClicked;  // double click anywhere on the row
+        // Inline editing. When `isEditable` returns true for a cell, a single click on it
+        // starts editing; `onRowEdited` receives all changed cells of the row on commit.
         std::function<bool(int row, const std::string& key)> isEditable;
-        std::function<void(int row, const std::string& key, const std::string& newValue)> onCellEdited;
+        std::function<void(int row, const RowEdits& edits)> onRowEdited;
         float rowHeight = 38.0f;
         ImVec2 size = ImVec2(0, 0);              // 0 = fill remaining
     };
@@ -64,13 +77,32 @@ public:
     static std::string prettifyKey(const std::string& key);
 
     bool isEditing() const { return editRow_ >= 0; }
-    void cancelEdit() { editRow_ = -1; editKey_.clear(); }
+    // Drops the current cell edit and every staged change of the row.
+    void cancelEdit();
 
 private:
+    // Editing state --------------------------------------------------------
+    void stageCurrentCell(const std::string& originalValue);
+    void beginEdit(int row, const std::string& key, const std::string& value, const std::string& rowId);
+    void commitEdits(int rowCount, const std::function<const FlatRecord&(int)>& rowAt, const DrawOptions& options);
+    const std::string* pendingValue(const std::string& key) const;
+
     int editRow_ = -1;
     std::string editKey_;
     std::string editBuffer_;
+    std::string editOriginal_;           // value of the cell when editing started
+    std::string editRowId_;              // "id" field of the edited record (to survive re-sorts)
     bool editFocus_ = false;
+    RowEdits pending_;                   // staged (tabbed-through) edits of the edited row
+
+    // Layout persistence ---------------------------------------------------
+    static Settings* settings_;
+    void applySavedLayout(int firstDataCol, int totalCols, bool selectable);
+    void captureLayout(int firstDataCol);
+    bool layoutPending_ = true;          // saved layout must be (re)applied before the next BeginTable
+    std::vector<std::string> appliedKeys_;   // column keys the layout was last applied for
+    TableLayout lastLayout_;             // last layout captured from the live table
+
     std::string id_;
     std::vector<ColumnSpec> columns_;
     std::vector<ColumnSpec> preferred_;

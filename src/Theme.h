@@ -78,7 +78,9 @@ class Theme {
 public:
     static Theme& get();
 
-    void loadFonts(float dpiScale);
+    // (Re)builds the font atlas. `fontScale` multiplies every size (user font-size preference).
+    // Must be called between frames; the renderer backend has to re-upload the atlas afterwards.
+    void loadFonts(float dpiScale, float fontScale = 1.0f);
     void apply(bool dark, const float accent[3]);
 
     const Palette& palette() const { return palette_; }

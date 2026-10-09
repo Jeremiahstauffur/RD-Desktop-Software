@@ -6,13 +6,21 @@ downloaded automatically by CMake, and networking uses the built-in WinHTTP libr
 
 ## Installing (no build needed)
 
-A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.0.0-setup.exe`. It
+A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.1.0-setup.exe`. It
 installs per user by default (no administrator prompt; "all users" can be chosen), adds a Start menu
 entry, an optional desktop shortcut (both with the RepairDesk icon, which the app also shows in the
 taskbar and title bar) and an uninstaller (Settings → Apps). The app needs no other software: the MinGW
 runtime (`libwinpthread-1.dll`) is included next to the exe. Uninstalling asks
 whether to also delete `%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
-`RD_Desktop_Software-1.0.0-setup.exe /VERYSILENT /CURRENTUSER`.
+`RD_Desktop_Software-1.1.0-setup.exe /VERYSILENT /CURRENTUSER`.
+
+**Updating:** download the new installer and run it. It detects an existing installation (per-user or
+all-users), updates it in place in the same folder with the same install mode and shortcut choices
+(the folder page is skipped and the summary page shows *Existing installation found: 1.0.0 → 1.1.0*), and
+replaces the Add/Remove Programs entry instead of adding a second one. Your preferences are kept: they
+live in `%APPDATA%\RD Desktop Software\settings.json`, which Setup never touches – accent colour,
+theme, font size, the column order/widths/visibility of every table, the API key / OAuth credentials
+and tokens. Close the app first (Setup asks if it is running).
 
 Building from source is only needed to change the code; after a change, run `package.bat` to refresh
 the installer in `dist\` and commit it together with the source.
@@ -99,11 +107,17 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
 - **Inventory** – list view with row dividers only, selectable columns (gear icon at the right of the
   header shows a checkbox list of every field RepairDesk returns), drag-to-reorder and drag-to-resize
   columns, sortable headers, multi-select checkboxes, bulk actions (delete, edit cost/price/quantity/
-  category), click-to-edit cells, and a product page (click a row) with name, quantity, cost, price,
-  SKU, UPC and description at the top. While the inventory refreshes, a thin accent-coloured progress
-  bar runs along the top edge of the window: it reaches the right edge once as many items as the
-  previous load have arrived; any additional items extend it as a dotted segment on the right, in
-  proportion to the previous total. The search box filters live across *every* field of every loaded
+  category), in-table editing and a product page with name, quantity, cost, price, SKU, UPC and
+  description at the top. **Single-click** a value (name, SKU, UPC, category, quantity, prices, …) to edit
+  it right in the table; **Tab** / **Shift+Tab** move to the next / previous editable column of the same
+  row (changed cells are shown in the accent colour until saved), **Enter**, tabbing past the last column
+  or clicking anywhere else saves the whole row to RepairDesk in one request, **Esc** discards it.
+  **Double-click** a row to open the product page. Column order, widths and which columns are shown are
+  remembered per table across restarts and updates. While the inventory refreshes, a thin accent-coloured
+  progress bar runs along the top edge of the window: it fills from left to right as items arrive, reaching
+  the right edge when as many items as the previous load (remembered between sessions) have been
+  received; any additional items extend it as a dotted segment on the right, in proportion to the previous
+  total. The search box filters live across *every* field of every loaded
   product (description, notes, location, tax class…); multiple words must all match. Saving a product
   (page, inline cell or bulk edit) leaves the quantity exactly as shown – the app compensates for
   RepairDesk's API, which otherwise adds the sent quantity to the stock.
@@ -131,4 +145,5 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
 - **Global search** – the search bar at the bottom of every screen searches products, invoices,
   tickets and customers across all fields and labels.
 - **Settings** – API key / OAuth2 credentials, dark/light theme, accent colour (presets and a full
-  colour picker) applied to header text, buttons, lines and fills.
+  colour picker) applied to header text, buttons, lines and fills, and the default font size (11–24 px,
+  default 15; headers, icons and table column widths scale with it; applied immediately).
