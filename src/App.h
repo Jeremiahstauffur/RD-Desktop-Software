@@ -66,6 +66,17 @@ public:
     // Incremented whenever cached items change in place; pages compare it to re-sort/filter.
     unsigned inventoryRevision = 0;
 
+    // Top progress bar for writes to RepairDesk (product saves, bulk actions, stock take
+    // submit, invoices, SMS). Begin a job with the number of requests it will make, let the
+    // worker thread bump `done` after each one and finish the job from the continuation.
+    // While a job runs the bar along the top edge fills like the inventory refresh does.
+    struct WriteJob {
+        std::atomic<size_t> done{0};
+        size_t total = 1;
+    };
+    std::shared_ptr<WriteJob> beginWriteJob(size_t total = 1);
+    void finishWriteJob(const std::shared_ptr<WriteJob>& job);
+
     // Finds an item by scanned code: SKU first, then UPC, then name.
     // Returns -1 when nothing matches.
     int findInventoryByCode(const std::string& code) const;
@@ -123,7 +134,9 @@ private:
     void drawNavigation();
     void drawContent(float height);
     void drawBottomSearchBar();
-    void drawLoadProgressBar();        // thin accent bar along the top edge while inventory refreshes
+    void drawLoadProgressBar();        // thin accent bar along the top edge (refresh, writes, update download)
+    void restartProgressBar();         // starts the bar from the left unless another source is showing
+    void holdProgressBar(float solid, float dotted);   // shows the finished bar briefly, then fades
     void drawToasts();
     void updateWindowChrome();
     void applyTokens(const OAuthTokens& tokens);
@@ -138,6 +151,9 @@ private:
     float progressSolid_ = 0.0f;
     float progressDotted_ = 0.0f;
     double progressHideAt_ = 0.0;      // keep the finished bar visible until this time
+    float progressHoldSolid_ = 1.0f;   // what the finished bar shows during that time
+    float progressHoldDotted_ = 0.0f;
+    std::vector<std::shared_ptr<WriteJob>> writeJobs_;   // RepairDesk writes in flight
 
     HWND hwnd_;
     std::vector<Toast> toasts_;

@@ -42,10 +42,12 @@ void sendSms(App& app) {
     c.sending = true;
     RepairDeskApi client = app.api();
     std::string mobile = c.mobile, message = c.message;
+    auto job = app.beginWriteJob();
     Async::run([client, ticket, mobile, message] { return client.sendTicketSms(ticket, mobile, message); },
-               [&app](ApiResult<json> r) {
+               [&app, job](ApiResult<json> r) {
                    ComposeState& st = C();
                    st.sending = false;
+                   app.finishWriteJob(job);
                    if (r.ok) {
                        app.notify(r.message.empty() ? "SMS sent." : r.message, ui::InfoKind::Success);
                        st.message.clear();

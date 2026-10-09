@@ -6,13 +6,13 @@ downloaded automatically by CMake, and networking uses the built-in WinHTTP libr
 
 ## Installing (no build needed)
 
-A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.2.0-setup.exe`. It
+A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.3.0-setup.exe`. It
 installs per user by default (no administrator prompt; "all users" can be chosen), adds a Start menu
 entry, an optional desktop shortcut (both with the RepairDesk icon, which the app also shows in the
 taskbar and title bar) and an uninstaller (Settings → Apps). The app needs no other software: the MinGW
 runtime (`libwinpthread-1.dll`) is included next to the exe. Uninstalling asks
 whether to also delete `%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
-`RD_Desktop_Software-1.2.0-setup.exe /VERYSILENT /CURRENTUSER`.
+`RD_Desktop_Software-1.3.0-setup.exe /VERYSILENT /CURRENTUSER`.
 
 ### Updating
 
@@ -27,7 +27,7 @@ at start-up can be switched off in the same card (`checkUpdatesOnStartup` in `se
 
 You can also download the new installer by hand and run it. Either way the existing installation
 (per-user or all-users) is updated in place with the same install mode and shortcut choices (the
-folder page is skipped and the summary page shows *Existing installation found: 1.1.0 → 1.2.0*), and
+folder page is skipped and the summary page shows *Existing installation found: 1.2.0 → 1.3.0*), and
 the Add/Remove Programs entry is replaced instead of a second one being added. Your preferences are
 kept: they live in `%APPDATA%\RD Desktop Software\settings.json`, which Setup never touches – accent
 colour, theme, font size, the column order/widths/visibility of every table, the API key / OAuth
@@ -38,7 +38,7 @@ credentials and tokens.
 The installer and the app are **not code-signed** (a certificate costs money), so Windows SmartScreen
 may show *Windows protected your PC* for a freshly downloaded setup – click **More info → Run anyway**.
 Both executables carry full version information, a manifest and a modern Inno Setup build; the
-`RD_Desktop_Software-1.2.0-setup.exe` in `dist\` scans clean with Microsoft Defender. If Defender
+`RD_Desktop_Software-1.3.0-setup.exe` in `dist\` scans clean with Microsoft Defender. If Defender
 still quarantines a build on your machine, report it as a false positive at
 <https://www.microsoft.com/wdsi/filesubmission> (the definitions are usually updated within a day),
 or build from source. To sign a release yourself, set `RD_SIGN_PFX` / `RD_SIGN_PASSWORD` before
@@ -75,16 +75,16 @@ The first configure downloads Dear ImGui and nlohmann/json, so an internet conne
 
 ## Rebuilding the installer / publishing an update
 
-The version number lives in `version.txt` (one line, e.g. `1.2.0`); CMake compiles it into the exe
+The version number lives in `version.txt` (one line, e.g. `1.3.0`); CMake compiles it into the exe
 (version resource, *Installed version* in Settings) and the installer reads it too. To publish a
-release: bump the version (`package.bat 1.3.0` writes it for you), double-click `package.bat`, then
+release: bump the version (`package.bat 1.4.0` writes it for you), double-click `package.bat`, then
 commit `dist\` with the source and push. The script runs `build.bat`, compiles
 `installer\RD_Desktop_Software.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) into
 `dist\RD_Desktop_Software-<version>-setup.exe` (the exe, `libwinpthread-1.dll`, `RDicon.ico` and this
 README), deletes older installers from `dist\` and writes `dist\update.json`:
 
 ```json
-{ "version": "1.2.0", "installer": "https://raw.githubusercontent.com/.../dist/RD_Desktop_Software-1.2.0-setup.exe",
+{ "version": "1.3.0", "installer": "https://raw.githubusercontent.com/.../dist/RD_Desktop_Software-1.3.0-setup.exe",
   "sha256": "...", "size": 3511208, "date": "2026-10-09" }
 ```
 
@@ -160,7 +160,10 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
   progress bar runs along the top edge of the window: it fills from left to right as items arrive, reaching
   the right edge when as many items as the previous load (remembered between sessions) have been
   received; any additional items extend it as a dotted segment on the right, in proportion to the previous
-  total. The search box filters live across *every* field of every loaded
+  total. The same bar also runs while anything is being written to RepairDesk (a product save, a bulk
+  action, a stock-take submit, a POS invoice, an SMS) – it slides until the first request has been
+  answered and then fills with the number of items done – and while an app update is being downloaded
+  (filled by bytes received). The search box filters live across *every* field of every loaded
   product (description, notes, location, tax class…); multiple words must all match. Saving a product
   (page, inline cell or bulk edit) leaves the quantity exactly as shown – the app compensates for
   RepairDesk's API, which otherwise adds the sent quantity to the stock.
@@ -192,5 +195,6 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
   default 15; headers, icons and table column widths scale with it; applied immediately).
 - **Updates** – Settings → Updates shows the installed version, checks the GitHub repository for a
   newer release (automatically at start-up, or on demand) and, if one exists, asks whether to install
-  it: the installer is downloaded with a progress bar, verified (size + SHA-256) and run as an in-place
-  update that keeps every preference and restarts the app.
+  it: the installer is downloaded with a progress bar (in the card and along the top edge of the
+  window), verified (size + SHA-256) and run as an in-place update that keeps every preference and
+  restarts the app.

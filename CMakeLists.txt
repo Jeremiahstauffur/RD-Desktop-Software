@@ -79,6 +79,8 @@ add_executable(RD_Desktop_Software WIN32
 )
 # version.h (RD_VERSION_*) for the code and the .rc VERSIONINFO block.
 configure_file(src/version.h.in "${CMAKE_BINARY_DIR}/generated/version.h" @ONLY)
+# windres has no header dependency scanning: make a version bump recompile the VERSIONINFO block.
+set_source_files_properties(src/app.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/generated/version.h;${CMAKE_CURRENT_SOURCE_DIR}/src/app.manifest")
 target_include_directories(RD_Desktop_Software PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 target_compile_definitions(RD_Desktop_Software PRIVATE
         UNICODE _UNICODE

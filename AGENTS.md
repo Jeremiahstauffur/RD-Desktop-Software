@@ -62,7 +62,8 @@ src/
   Updater.h / Updater.cpp GitHub update check: fetch dist/update.json (RD_UPDATE_MANIFEST_URL env overrides the URL for testing),
                           compareVersions, download to %LOCALAPPDATA%\RD Desktop Software\updates with progress/cancel + size/SHA-256
                           check (bcrypt), launchInstaller (/SILENT /NORESTART /FROMAPP=1 /LOG), cleanupDownloads.
-  App.h / App.cpp         Top-level application state, navigation rail, page routing, global search bar, update state machine
+  App.h / App.cpp         Top-level application state, navigation rail, page routing, global search bar, top-edge progress bar
+                          (`drawLoadProgressBar`: inventory refresh, `WriteJob`s = RepairDesk writes, update download), update state machine
                           (UpdateState, checkForUpdates/startUpdate/cancelUpdate/pollInstaller; start-up check + toast).
   Pages.h                 Declarations of every page/panel draw function.
   pages/ListPage.h        Shared paged/searchable list scaffolding used by Tickets/Invoices/Customers.
@@ -120,6 +121,9 @@ src/
 - Fonts are rebuilt only between frames: a page that changes the font size calls
   `app.requestFontRebuild()`; `main.cpp` invalidates the DX11 device objects and calls
   `Theme::loadFonts(dpi, settings.fontScale())` before the next `NewFrame`. Never call `loadFonts` mid-frame.
+- **Every write to RepairDesk shows the top progress bar.** Wrap the `Async::run` of a save/bulk/submit/invoice/SMS
+  in `auto job = app.beginWriteJob(n)` (n = requests the worker will make), `job->done++` on the worker after each
+  request, `app.finishWriteJob(job)` first thing in the continuation. Never touch `progress*_` members from pages.
 - Table editing: pages supply `isEditable` + `onRowEdited` (one callback with all changed cells of the row)
   and `onRowDoubleClicked` for the detail page. Don't add per-cell save callbacks back — the row-at-once
   commit is what makes Tab-through editing a single API request.
@@ -167,6 +171,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-09 | v1.3.0: top-edge progress bar generalised. `App::drawLoadProgressBar` now has three sources: inventory refresh (unchanged look: previous count = 100 %, dotted overflow), writes to RepairDesk (`App::WriteJob` via `beginWriteJob`/`finishWriteJob`: product page + inline + bulk saves, create product, stock-take submit, POS invoice, send SMS; sliding segment until the first request returns, then done/total) and the installer download (`updateReceived`/`updateInfo.size`). Finished state is held 0.8 s via `holdProgressBar(solid, dotted)`, cancelled/failed downloads fade without filling, `restartProgressBar` only resets when no other source is active. `CMakeLists.txt`: `OBJECT_DEPENDS` on `app.rc` so a version bump recompiles the VERSIONINFO (it did not: the exe still said 1.2.0). Version bumped to 1.3.0, `dist\` repackaged, README updated. | Done (release build, exe VERSIONINFO 1.3.0, Defender scan of the setup clean, app starts). Bar during live writes/download needs a manual pass |
 | 2026-10-09 | v1.2.0: (1) Defender false positive (`Behavior:Win32/DefenseEvasion.A!ml` on `dist\…-1.1.0-setup.exe`): bisected the `.iss` with Defender's `MpCmdRun` — the flag was ML/heuristic (an identical-config rebuild scanned clean), so hardened the binaries instead: `src/app.rc` now embeds `VS_VERSION_INFO` (from generated `version.h`) + `app.manifest` (asInvoker, Win10/11, PerMonitorV2), `.iss` gained `VersionInfo*`/`AppPublisherURL`/`AppCopyright` and optional `SignTool` (`package.bat` signs exe+setup+uninstaller when `RD_SIGN_PFX`/`RD_SIGN_PASSWORD` are set). README documents SmartScreen/false-positive reporting. (2) Single version source `version.txt` → CMake `project(VERSION)` → `version.h`; `package.bat <ver>` rewrites it. (3) In-app updates: `Updater.*` fetches `dist/update.json` from GitHub `master` (`package.bat` writes it with sha256/size/date and deletes older installers), `App::checkForUpdates` runs at start-up (`Settings::checkUpdatesOnStartup`, toast + accent dot on the Settings nav item) and from Settings → **Updates** card (installed version, *Version x is available … update now?* with **Update now**/**Later**, download progress bar + Cancel, errors); `startUpdate` downloads via new `http::downloadToFile` (streaming, progress/cancel), verifies size + SHA-256 (bcrypt), saves settings, launches Setup `/SILENT /NORESTART /FROMAPP=1 /LOG`; Setup closes the app (`CloseApplications`) and the new `[Run]` entry relaunches it; `pollInstaller` reports a cancelled/failed Setup. | Done (verified: Defender scan of exe + 1.2.0 setup clean; console harness against a local HTTP server — check/compare/download/sha mismatch/size mismatch/404/cancel all pass; silent 1.2.0 install → running app → `/SILENT /FROMAPP=1` update closed the old process and relaunched the new one, uninstall clean). Needs a live pass once `dist\` is pushed: the installed 1.1.0 has no updater, so the first in-app update will be 1.2.0 → next version |
 | 2026-10-09 | v1.1.0: (1) installer updates in place — fixed `AppId`, `UsePreviousPrivileges/AppDir/Tasks`, `DirExistsWarning=no`, `[Code]` reads previous `DisplayVersion`/`InstallLocation` from HKCU/HKLM, skips the folder page and lists the kept preferences on the Ready page; `package.bat`/`.iss` version 1.1.0. (2) Preferences persisted in `settings.json`: `fontSize`, `inventoryLastCount`, `tableLayouts` (order/width/visibility/sort by column key) via `DataTable::bindSettings` + `applySavedLayout` (writes `ImGuiTableSettings`, requests reload) / `captureLayout` (debounced save in `App::frame`). (3) Settings → Appearance font-size slider 11–24 px (`Theme::loadFonts(dpi, fontScale)`, atlas rebuilt between frames via `App::requestFontRebuild`). (4) Inventory table: single click edits a cell in place, Tab/Shift+Tab stage edits along the row, Enter/click-away/end of row commit one `saveRowEdits` PUT, Esc discards; double-click opens the product page (`onRowDoubleClicked`; `onCellEdited` removed). (5) Progress bar: 100 % mark falls back to the persisted previous count on the first load after start-up, fills when the load finishes early. `build.bat` quotes `-DCMAKE_MAKE_PROGRAM` (CLion under `Program Files`). | Done (verified: release build; app starts and writes the new keys; silent 1.0.0 → 1.1.0 update keeps dir/registry entry/settings, uninstall clean). Inline editing / Tab / font size / progress bar need a manual pass against live data |
 | 2026-10-08 | App icon from `RDicon.png`: `tools\make_icon.ps1` pads to square and writes `installer\RDicon.ico` (16–256 px, PNG entries); `src\app.rc` + `resource.h` embed it (CMake `LANGUAGES CXX RC`), `main.cpp` sets `hIcon`/`hIconSm` so taskbar + title bar show it; `.iss` gained `SetupIconFile`, ships `RDicon.ico` and uses it as `IconFilename` for Start menu/desktop shortcuts. `dist\` installer rebuilt. | Done (verified: exe/setup icon extract OK, silent install → shortcuts point at `{app}\RDicon.ico`, uninstall clean) |
@@ -348,6 +353,12 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
   so the new version is relaunched only for in-app updates. `CloseApplications=yes` closes the running exe via
   Restart Manager without any prompt in silent mode. When testing with PowerShell, `Start-Process -Wait` waits
   for the relaunched *child* app too — poll `HasExited`/the log instead of `-Wait`.
+- **`windres` does not scan `#include`s.** Ninja rebuilt every `.cpp` after the version bump but not `app.rc`, so the
+  exe kept the old VERSIONINFO (`(Get-Item build\RD_Desktop_Software.exe).VersionInfo.FileVersion` showed 1.2.0 while
+  `kCurrentVersion` was 1.3.0). `set_source_files_properties(src/app.rc PROPERTIES OBJECT_DEPENDS <version.h;app.manifest>)`
+  fixes it; check the FileVersion after every `package.bat <ver>`.
+- **`package.bat` ships `README.md` inside the setup**, so edit the README *before* the final `package.bat` (or run
+  `package.bat nobuild` afterwards) or the installer carries stale docs.
 - **`raw.githubusercontent.com` caches ~5 min.** Append a `?t=<unix time>` cache-buster to the manifest GET; the
   installer download may still lag behind a fresh push, which is why `Updater::download` verifies `size` and
   `sha256` and tells the user to retry in a few minutes on mismatch.
@@ -414,6 +425,9 @@ was ambiguous, record here what information would have helped.
   is an option — without one the fix can only reduce heuristics, not guarantee a clean verdict. For update
   requests say where releases should live (committed `dist\` vs. GitHub Releases), which branch, whether the
   check should run at start-up or only on demand, and whether the update may restart the app automatically.
+- (2026-10-09) "When an update is being sent through the api, show a progress bar" was ambiguous between the app
+  update download and writes to RepairDesk; the user wanted both. Name the operation (download vs. save/submit)
+  and, for multi-item operations, whether the bar should count items or requests.
 
 ---
 

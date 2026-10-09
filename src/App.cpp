@@ -318,6 +318,7 @@ void App::startUpdate() {
     updateState = UpdateState::Downloading;
     updateError.clear();
     updateReceived.store(0);
+    restartProgressBar();
     auto cancel = std::make_shared<std::atomic<bool>>(false);
     updateCancel_ = cancel;
     const updater::UpdateInfo info = updateInfo;
@@ -328,14 +329,17 @@ void App::startUpdate() {
                    updateCancel_.reset();
                    if (cancel->load()) {
                        updateState = UpdateState::Available;
+                       progressHideAt_ = 0.0;   // fade the top bar out without filling it
                        return;
                    }
                    if (!r.ok) {
                        updateState = UpdateState::Available;
                        updateError = r.error;
                        notify("Update: " + r.error, ui::InfoKind::Error);
+                       progressHideAt_ = 0.0;
                        return;
                    }
+                   holdProgressBar(1.0f, 0.0f);
                    saveSettings();   // everything Setup must preserve is on disk before it runs
                    std::string err;
                    updateProcess_ = updater::launchInstaller(r.path, err);
@@ -431,9 +435,7 @@ void App::refreshInventory(const std::string& keyword) {
     // start-up the count persisted from the previous session.
     inventoryPreviousTotal = inventory.empty() ? (size_t)std::max(0, settings.inventoryLastCount) : inventory.size();
     inventoryLoadProgress.store(0);
-    progressSolid_ = 0.0f;
-    progressDotted_ = 0.0f;
-    progressHideAt_ = 0.0;
+    restartProgressBar();
     RepairDeskApi client = api();
     int maxItems = settings.inventoryPageSize;
     std::atomic<size_t>* progress = &inventoryLoadProgress;
@@ -444,10 +446,13 @@ void App::refreshInventory(const std::string& keyword) {
         [this, keyword](ApiResult<std::vector<InventoryItem>> result) {
             inventoryLoading = false;
             inventoryLoadedOnce = true;
-            progressHideAt_ = ImGui::GetTime() + 0.8;
             if (result.ok) {
                 inventory = std::move(result.value);
                 inventoryLoadProgress.store(inventory.size());
+                // Finished: a full bar, or the previous total plus the extra items as a dotted tail.
+                const size_t loaded = inventory.size(), previous = inventoryPreviousTotal;
+                if (previous == 0 || loaded <= previous) holdProgressBar(1.0f, 0.0f);
+                else holdProgressBar((float)previous / (float)loaded, 1.0f - (float)previous / (float)loaded);
                 inventoryStatus = "Loaded " + std::to_string(inventory.size()) + " items at " + timeNow();
                 if (keyword.empty() && settings.inventoryLastCount != (int)inventory.size()) {
                     settings.inventoryLastCount = (int)inventory.size();
@@ -456,8 +461,27 @@ void App::refreshInventory(const std::string& keyword) {
             } else {
                 inventoryError = result.message;
                 notify("Inventory: " + result.message, ui::InfoKind::Error);
+                progressHideAt_ = 0.0;
             }
         });
+}
+
+std::shared_ptr<App::WriteJob> App::beginWriteJob(size_t total) {
+    auto job = std::make_shared<WriteJob>();
+    job->total = std::max<size_t>(1, total);
+    restartProgressBar();
+    writeJobs_.push_back(job);
+    return job;
+}
+
+void App::finishWriteJob(const std::shared_ptr<WriteJob>& job) {
+    for (size_t i = 0; i < writeJobs_.size(); ++i) {
+        if (writeJobs_[i] == job) {
+            writeJobs_.erase(writeJobs_.begin() + i);
+            break;
+        }
+    }
+    if (writeJobs_.empty()) holdProgressBar(1.0f, 0.0f);
 }
 
 void App::refreshLookups() {
@@ -605,34 +629,64 @@ void App::frame() {
     drawToasts();
 }
 
-// Thin accent bar along the top edge of the window while the inventory refreshes.
-// The previous item count is the 100% mark: the solid part travels left to right
-// and only reaches the right edge once at least as many items as before have
-// arrived. Items beyond the previous total are shown as a dotted segment on the
-// right, sized in proportion to the solid (previous total) segment.
+void App::restartProgressBar() {
+    // Another source is already showing the bar: just let it carry on.
+    if (inventoryLoading || !writeJobs_.empty() || updateState == UpdateState::Downloading) return;
+    progressSolid_ = 0.0f;
+    progressDotted_ = 0.0f;
+    progressHideAt_ = 0.0;
+}
+
+void App::holdProgressBar(float solid, float dotted) {
+    progressHoldSolid_ = solid;
+    progressHoldDotted_ = dotted;
+    progressHideAt_ = ImGui::GetTime() + 0.8;
+}
+
+// Thin accent bar along the top edge of the window while something is in flight:
+//  - inventory refresh: the previous item count is the 100% mark, the solid part travels
+//    left to right and only reaches the right edge once at least as many items as before
+//    have arrived; items beyond the previous total are shown as a dotted segment on the
+//    right, sized in proportion to the solid (previous total) segment;
+//  - writes to RepairDesk (WriteJob): requests completed / requests to make;
+//  - update download: bytes received / installer size.
+// Until the first unit arrives (or when no total is known) a segment slides across.
 void App::drawLoadProgressBar() {
     const double now = ImGui::GetTime();
-    const bool active = inventoryLoading || now < progressHideAt_;
+    const bool downloading = updateState == UpdateState::Downloading;
+    const bool busy = inventoryLoading || !writeJobs_.empty() || downloading;
+    const bool active = busy || now < progressHideAt_;
     if (!active && progressSolid_ <= 0.0f && progressDotted_ <= 0.0f) return;
-
-    const size_t loaded = inventoryLoadProgress.load();
-    const size_t previous = inventoryPreviousTotal;
 
     // Target fractions of the full width.
     float targetSolid = 0.0f, targetDotted = 0.0f;
     bool indeterminate = false;
-    if (!active) {
-        targetSolid = targetDotted = 0.0f;         // fade out once the hold time has elapsed
-    } else if (previous == 0) {
-        indeterminate = inventoryLoading;          // first load ever: no reference total yet
-        targetSolid = inventoryLoading ? 0.0f : 1.0f;
-    } else if (!inventoryLoading && loaded <= previous) {
-        targetSolid = 1.0f;                        // finished (possibly with fewer items): fill the bar
-    } else if (loaded <= previous) {
-        targetSolid = (float)loaded / (float)previous;
-    } else {
-        targetSolid = (float)previous / (float)loaded;
-        targetDotted = 1.0f - targetSolid;
+    if (inventoryLoading) {
+        const size_t loaded = inventoryLoadProgress.load();
+        const size_t previous = inventoryPreviousTotal;
+        if (previous == 0) {
+            indeterminate = true;                  // first load ever: no reference total yet
+        } else if (loaded <= previous) {
+            targetSolid = (float)loaded / (float)previous;
+        } else {
+            targetSolid = (float)previous / (float)loaded;
+            targetDotted = 1.0f - targetSolid;
+        }
+    } else if (!writeJobs_.empty()) {
+        size_t done = 0, total = 0;
+        for (const auto& job : writeJobs_) {
+            done += std::min(job->done.load(), job->total);
+            total += job->total;
+        }
+        if (done == 0) indeterminate = true;       // single saves slide until the request returns
+        else targetSolid = (float)done / (float)total;
+    } else if (downloading) {
+        const unsigned long long received = updateReceived.load(), size = updateInfo.size;
+        if (size == 0 || received == 0) indeterminate = true;
+        else targetSolid = (float)std::min(1.0, (double)received / (double)size);
+    } else if (active) {
+        targetSolid = progressHoldSolid_;          // finished: show the final state for a moment
+        targetDotted = progressHoldDotted_;
     }
 
     // Ease towards the target so page arrivals glide instead of jumping.

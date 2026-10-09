@@ -89,10 +89,12 @@ void submitSale(App& app) {
     body["items"] = items;
 
     RepairDeskApi client = app.api();
+    auto job = app.beginWriteJob();
     Async::run([client, body] { return client.createInvoice(body); },
-               [&app](ApiResult<json> r) {
+               [&app, job](ApiResult<json> r) {
                    PosState& st = S();
                    st.submitting = false;
+                   app.finishWriteJob(job);
                    if (r.ok) {
                        std::string orderId;
                        if (r.value.is_object() && r.value.contains("data") && r.value["data"].is_object()) {

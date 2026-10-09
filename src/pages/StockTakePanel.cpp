@@ -123,14 +123,16 @@ void applyToRepairDesk(App& app) {
         std::vector<InventoryItem> refreshedFailed;               // re-read items that did not reach the scanned quantity
         std::vector<std::pair<long long, int>> updatedQuantities; // fallback when the re-read failed
     };
+    auto job = app.beginWriteJob(targets.size());
     Async::run(
-        [client, targets] {
+        [client, targets, job] {
             Outcome out;
             for (const TargetEntry& t : targets) {
                 if (t.change == 0) {
                     // Already at the counted quantity; nothing to send.
                     out.ok++;
                     out.updatedQuantities.push_back({t.item.id, t.scanned});
+                    job->done++;
                     continue;
                 }
                 // PUT /inventory/{id} treats `in_stock` as an adjustment; saveInventoryItem
@@ -147,12 +149,14 @@ void applyToRepairDesk(App& app) {
                     if (out.firstError.empty()) out.firstError = "\"" + t.item.name + "\": " + r.message;
                     if (r.value.id != 0) out.refreshedFailed.push_back(std::move(r.value));
                 }
+                job->done++;
             }
             return out;
         },
-        [&app](Outcome out) {
+        [&app, job](Outcome out) {
             StockTakeState& st = S();
             st.applying = false;
+            app.finishWriteJob(job);
             // Updated items leave the panel so that a re-submit only retries the failed ones.
             auto removeEntry = [&](long long id) {
                 for (size_t i = 0; i < st.entries.size(); ++i) {

@@ -243,9 +243,10 @@ void runBulkAction(App& app) {
     std::string text = s.bulkText;
     RepairDeskApi client = app.api();
     s.bulkRunning = true;
+    auto job = app.beginWriteJob(targets.size());
 
     Async::run(
-        [client, targets, action, number, integer, text] {
+        [client, targets, action, number, integer, text, job] {
             BulkOutcome out;
             for (const InventoryItem& it : targets) {
                 bool ok;
@@ -274,12 +275,14 @@ void runBulkAction(App& app) {
                     out.failed++;
                     if (out.firstError.empty()) out.firstError = message;
                 }
+                job->done++;
             }
             return out;
         },
-        [&app, action](BulkOutcome out) {
+        [&app, action, job](BulkOutcome out) {
             InventoryState& st = S();
             st.bulkRunning = false;
+            app.finishWriteJob(job);
             st.pendingAction = BulkAction::None;
             char buf[256];
             if (out.failed == 0) {
@@ -327,6 +330,7 @@ void saveFields(App& app, long long id, const json& fields, const std::string& w
     payload.erase("in_stock");
 
     RepairDeskApi client = app.api();
+    auto job = app.beginWriteJob();
     Async::run(
         [client, id, payload, currentStock, targetStock] {
             std::pair<ApiResult<InventoryItem>, WriteNotes> out;
@@ -334,8 +338,9 @@ void saveFields(App& app, long long id, const json& fields, const std::string& w
             out.first = client.saveInventoryItem(id, payload, currentStock, targetStock, &out.second);
             return out;
         },
-        [&app, what](std::pair<ApiResult<InventoryItem>, WriteNotes> out) {
+        [&app, what, job](std::pair<ApiResult<InventoryItem>, WriteNotes> out) {
             S().productSaving = false;
+            app.finishWriteJob(job);
             reportWriteNotes(app, out.second);
             const ApiResult<InventoryItem>& r = out.first;
             if (r.ok) {
@@ -539,15 +544,17 @@ void createProduct(App& app, InventoryState& s) {
     s.productSaving = true;
     const std::string name = s.editor.name;
     RepairDeskApi client = app.api();
+    auto job = app.beginWriteJob();
     Async::run([client, fields] {
                    std::pair<ApiResult<json>, WriteNotes> out;
                    out.second.createMissing = true;
                    out.first = client.addInventoryItem(fields, &out.second);
                    return out;
                },
-               [&app, name](std::pair<ApiResult<json>, WriteNotes> out) {
+               [&app, name, job](std::pair<ApiResult<json>, WriteNotes> out) {
                    InventoryState& st = S();
                    st.productSaving = false;
+                   app.finishWriteJob(job);
                    reportWriteNotes(app, out.second);
                    const ApiResult<json>& r = out.first;
                    if (r.ok) {
