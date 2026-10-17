@@ -678,7 +678,6 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
                 if (editingRow && editKey_ == key) {
                     // Inline editor
                     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (options.rowHeight - ImGui::GetFrameHeight()) * 0.5f);
-                    ImGui::SetNextItemWidth(-FLT_MIN);
                     const bool firstFrame = editFocus_;
                     if (editFocus_) {
                         ImGui::SetKeyboardFocusHere();
@@ -687,8 +686,27 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
                     ImGui::PushID(i);
                     ImGui::PushStyleColor(ImGuiCol_FrameBg, P.control);
                     ImGui::PushStyleColor(ImGuiCol_Border, P.accent);
-                    bool entered = ImGui::InputText("##edit", &editBuffer_,
+                    
+                    // Check if this column has dropdown options
+                    bool hasDropdown = false;
+                    if (options.dropdownOptions) {
+                        editDropdownOptions_.clear();
+                        options.dropdownOptions(key, editDropdownOptions_);
+                        hasDropdown = !editDropdownOptions_.empty();
+                    }
+                    
+                    bool entered = false;
+                    if (hasDropdown) {
+                        // Use SuggestField for columns with dropdown options
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        entered = ui::SuggestField("##edit", editBuffer_, editDropdownOptions_, nullptr, -FLT_MIN);
+                    } else {
+                        // Plain text input for other columns
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        entered = ImGui::InputText("##edit", &editBuffer_,
                                                     ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+                    }
+                    
                     ImGui::PopStyleColor(2);
                     if (firstFrame && !ImGui::IsItemVisible()) ImGui::SetScrollHereX(0.5f);
                     const bool active = ImGui::IsItemActive();

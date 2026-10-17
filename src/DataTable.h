@@ -70,6 +70,9 @@ public:
         std::function<bool(int row, const std::string& key)> isEditable;
         std::function<void(int row, const RowEdits& edits)> onRowEdited;
         FilterValues filterValues;               // enables the header filter icons
+        // Dropdown options for inline editing: when present, the editor shows a
+        // SuggestField instead of a plain text field for the given column.
+        std::function<void(const std::string& key, std::vector<std::string>& options)> dropdownOptions;
         float rowHeight = 38.0f;
         ImVec2 size = ImVec2(0, 0);              // 0 = fill remaining
     };
@@ -127,6 +130,9 @@ private:
     std::vector<std::string> filterOptions_;   // distinct values offered in the popup
     std::string filterSearch_;
     ImVec2 filterPopupPos_;
+
+    // Inline dropdown ------------------------------------------------------
+    std::vector<std::string> editDropdownOptions_;  // options for the current cell editor
 
     std::string id_;
     std::vector<ColumnSpec> columns_;

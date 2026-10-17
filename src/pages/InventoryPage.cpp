@@ -1159,6 +1159,19 @@ void inventory(App& app) {
                     values.push_back(f == it.fields.end() ? std::string() : f->second);
                 }
             };
+            // Inline editing dropdowns: match the product page fields.
+            opts.dropdownOptions = [&](const std::string& key, std::vector<std::string>& options) {
+                if (key == "item_type") options = s.suggest.categories;
+                else if (key == "manufacturer") options = s.suggest.manufacturers;
+                else if (key == "device") options = s.suggest.devices;
+                else if (key == "supplier") options = s.suggest.suppliers;
+                else if (key == "condition") options = s.suggest.conditions;
+                else if (key == "physical_location") options = s.suggest.locations;
+                else if (key == "tax_class") options = s.suggest.taxClasses;
+                else if (key == "valuation_method") {
+                    for (const auto& m : kValuationMethods) options.push_back(m.label);
+                }
+            };
             s.table.draw((int)s.view.size(), [&](int row) -> const FlatRecord& { return app.inventory[s.view[row]].fields; }, opts);
 
             for (size_t i = 0; i < s.view.size(); ++i) {
