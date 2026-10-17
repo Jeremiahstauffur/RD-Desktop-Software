@@ -67,10 +67,14 @@ src/
                           (UpdateState, checkForUpdates/startUpdate/cancelUpdate/pollInstaller; start-up check + toast).
   Pages.h                 Declarations of every page/panel draw function.
   pages/ListPage.h        Shared paged/searchable list scaffolding used by Tickets/Invoices/Customers.
-  pages/InventoryPage.cpp Inventory table, column chooser, bulk actions, product page (suggest drop-downs, price pill + formula popup).
+  pages/InventoryPage.cpp Inventory table (header funnel filters via `DataTable` + `passesFilters` in `rebuildView`, "Clear N column
+                          filters" in the status bar), column chooser, bulk actions, product page (suggest drop-downs, price pill + formula popup).
   pages/StockTakePanel.cpp Right-hand stock-take sidebar: Enter = exact SKU → UPC → name (`App::findInventoryByCode`), a 1 s typing
                           pause shows a product drop-down (`App::searchInventory`, all fields, click = add), scanned count is
-                          click-to-edit (`editingId`/`editText`), Submit.
+                          click-to-edit (`editingId`/`editText`), **Bulk edit** toggle left of Submit (`App::stockTakeBulkEdit`) opens
+                          `drawBulkPanel` to the left (Category/Location/Supplier `ComboField`s from `App::inventoryValues` + Lookups;
+                          `BulkEdit::overrides()` rides along in `saveInventoryItem` on Submit); `stockTakeWidth()` tells the inventory page
+                          how much room both panels need.
   pages/PosPage.cpp       Product grid, barcode entry, cart, invoice creation.
   pages/TicketsPage.cpp / InvoicesPage.cpp / CustomersPage.cpp  Paged lists → RecordViewer.
   pages/RecordViewer.cpp  Generic "show every field of a JSON record" viewer.
@@ -79,8 +83,12 @@ src/
   pages/SettingsPage.cpp  Updates card (installed version, check, update prompt/progress, start-up toggle), API key / OAuth2
                           credentials, theme, accent colour, font size.
   DataTable.h/.cpp        Reusable ImGui table: column visibility, reorder, resize, sort, multi-select; layout persisted by
-                          column key in Settings::tableLayouts (bindSettings); single-click inline editing with Tab/Shift+Tab
-                          along the row (staged, one onRowEdited per row), double-click = onRowDoubleClicked.
+                          column key in Settings::tableLayouts (bindSettings; `captureLayout` merges columns the table does not
+                          currently have so a pre-discovery frame cannot truncate the saved layout); single-click inline editing
+                          with Tab/Shift+Tab along the row (staged, one onRowEdited per row), double-click = onRowDoubleClicked;
+                          optional per-column value filters (`DrawOptions::filterValues` enables a funnel in every header →
+                          `drawFilterPopup`: search, tri-state Select all, checkbox per value, Clear filter; `passesFilters`,
+                          `filterDirty`, `clearFilters` for the owner).
   Widgets.h/.cpp          Custom Win11-styled ImGui widgets (buttons, inputs, toggles, SuggestField/ComboField, PillButton).
   Theme.h/.cpp            Dark/light theme + accent colour application.
   Settings.h/.cpp         Load/save settings.json (OAuth tokens, theme/accent/fontSize, TableLayout per table id,
@@ -129,6 +137,12 @@ src/
 - Table editing: pages supply `isEditable` + `onRowEdited` (one callback with all changed cells of the row)
   and `onRowDoubleClicked` for the detail page. Don't add per-cell save callbacks back — the row-at-once
   commit is what makes Tab-through editing a single API request.
+- Column filters live in `DataTable` (session only, not persisted): the owner supplies `filterValues` (values of
+  the *unfiltered* data) and applies `passesFilters` when it rebuilds its row list, polling `filterDirty` like
+  `sortDirty`. Don't filter inside `DataTable::draw` — pages own their row lists (sort, search, selection).
+- The `##root` window must **not** carry `ImGuiWindowFlags_NoSavedSettings`: tables inherit that flag from their
+  root window and `TableLoadSettings` then ignores the layout `DataTable::applySavedLayout` writes into ImGui's
+  table settings (this is why layouts never restored before v1.5.0).
 - Adding a new page: declare in `Pages.h`, implement in `src/pages/`, register in `App.cpp`
   navigation, and add the `.cpp` to `CMakeLists.txt`.
 - **Releases:** the version is edited in `version.txt` only (or via `package.bat <ver>`); never hard-code it
@@ -173,6 +187,7 @@ Newest entries first. One line per task: date, what changed, status.
 
 | Date | Change | Status |
 | --- | --- | --- |
+| 2026-10-17 | v1.5.0: (1) Stock take **Bulk edit**: toggle (`ui::ToggleSwitch`) left of Submit, `App::stockTakeBulkEdit`; when on, `drawBulkPanel` (300 px) is drawn left of the sidebar with three `ui::ComboField`s — Category / Location / Supplier — listing `App::inventoryValues("item_type"/"physical_location"/"supplier")` (locations/suppliers merged with `Lookups`), default *No change*, × resets one, "Reset all"; Submit passes `BulkEdit::overrides()` into `toUpdatePayload(overrides)` for every scanned item (items with change 0 are now sent too when a bulk value is set), `WriteNotes` messages are toasted, selections reset after a clean submit. `pages::stockTakeWidth()` sizes the inventory page. (2) Inventory column layout was never restored at start-up: root cause = `##root` had `NoSavedSettings`, which tables inherit, so `TableLoadSettings` returned before reading the settings `applySavedLayout` had written (confirmed with a log: `SettingsLoadedFlags=0`). Flag removed; additionally `captureLayout` now merges saved columns the table does not know yet (the first frames show only the 22 preferred columns while the inventory loads, which truncated the 59-column layout). (3) Per-column value filters: funnel at the right edge of every inventory header (`DataTable::DrawOptions::filterValues`), popup with search, tri-state Select all, checkbox list (`(blank)` for empty), Clear filter / Done; `passesFilters` applied in `rebuildView`, status-bar "Clear N column filters". New `icons::Filter` (U+E71C). Version 1.5.0, README + `dist\` refreshed. | Done (release build; verified live with a fixture layout: widths/order/visibility of preferred + discovered columns survive start-up, a full session and exit; filter popup, select-all, single value, clear; bulk panel open/pick/clear — Submit with bulk values not run against the live store) |
 | 2026-10-09 | v1.4.0: stock take. (1) `App::findInventoryByCode` now returns only the *first exact* (case-insensitive, trimmed) SKU match, else the first exact UPC, else the first exact name — the trailing partial-name fallback was removed (also affects the POS barcode box). (2) Typing in the scan field and pausing 1 s (`kSuggestDelay`) without Enter shows a drop-down window under the field (`drawSuggestions`, separate `ImGui::Begin` like `ui::SuggestField`, drawn after the panel's `EndChild`) listing up to 25 products whose fields contain every typed word — new shared `App::searchInventory(text, limit)` mirrors the inventory table filter; clicking a row adds the item (`pickSuggestion`), Esc/click elsewhere hides it, Enter still does the exact match. (3) The accent "Scanned" number is click-to-edit: an `InputText` (`CharsDecimal`) replaces it, Enter/click-away commit (clamped 0…999999), Esc cancels; +/− buttons and re-scans still change it by 1. Version 1.4.0, `dist\` repackaged, README Features updated. | Done (release build, exe VERSIONINFO 1.4.0, app starts, Defender scan of the setup clean). Suggestion list / count editing need a manual pass against live inventory |
 | 2026-10-09 | v1.3.0: top-edge progress bar generalised. `App::drawLoadProgressBar` now has three sources: inventory refresh (unchanged look: previous count = 100 %, dotted overflow), writes to RepairDesk (`App::WriteJob` via `beginWriteJob`/`finishWriteJob`: product page + inline + bulk saves, create product, stock-take submit, POS invoice, send SMS; sliding segment until the first request returns, then done/total) and the installer download (`updateReceived`/`updateInfo.size`). Finished state is held 0.8 s via `holdProgressBar(solid, dotted)`, cancelled/failed downloads fade without filling, `restartProgressBar` only resets when no other source is active. `CMakeLists.txt`: `OBJECT_DEPENDS` on `app.rc` so a version bump recompiles the VERSIONINFO (it did not: the exe still said 1.2.0). Version bumped to 1.3.0, `dist\` repackaged, README updated. | Done (release build, exe VERSIONINFO 1.3.0, Defender scan of the setup clean, app starts). Bar during live writes/download needs a manual pass |
 | 2026-10-09 | v1.2.0: (1) Defender false positive (`Behavior:Win32/DefenseEvasion.A!ml` on `dist\…-1.1.0-setup.exe`): bisected the `.iss` with Defender's `MpCmdRun` — the flag was ML/heuristic (an identical-config rebuild scanned clean), so hardened the binaries instead: `src/app.rc` now embeds `VS_VERSION_INFO` (from generated `version.h`) + `app.manifest` (asInvoker, Win10/11, PerMonitorV2), `.iss` gained `VersionInfo*`/`AppPublisherURL`/`AppCopyright` and optional `SignTool` (`package.bat` signs exe+setup+uninstaller when `RD_SIGN_PFX`/`RD_SIGN_PASSWORD` are set). README documents SmartScreen/false-positive reporting. (2) Single version source `version.txt` → CMake `project(VERSION)` → `version.h`; `package.bat <ver>` rewrites it. (3) In-app updates: `Updater.*` fetches `dist/update.json` from GitHub `master` (`package.bat` writes it with sha256/size/date and deletes older installers), `App::checkForUpdates` runs at start-up (`Settings::checkUpdatesOnStartup`, toast + accent dot on the Settings nav item) and from Settings → **Updates** card (installed version, *Version x is available … update now?* with **Update now**/**Later**, download progress bar + Cancel, errors); `startUpdate` downloads via new `http::downloadToFile` (streaming, progress/cancel), verifies size + SHA-256 (bcrypt), saves settings, launches Setup `/SILENT /NORESTART /FROMAPP=1 /LOG`; Setup closes the app (`CloseApplications`) and the new `[Run]` entry relaunches it; `pollInstaller` reports a cancelled/failed Setup. | Done (verified: Defender scan of exe + 1.2.0 setup clean; console harness against a local HTTP server — check/compare/download/sha mismatch/size mismatch/404/cancel all pass; silent 1.2.0 install → running app → `/SILENT /FROMAPP=1` update closed the old process and relaunched the new one, uninstall clean). Needs a live pass once `dist\` is pushed: the installed 1.1.0 has no updater, so the first in-app update will be 1.2.0 → next version |
@@ -213,6 +228,11 @@ Newest entries first. One line per task: date, what changed, status.
       parsing `code` from a POST body if RepairDesk ever switches to `response_mode=form_post`.
 - [ ] Inline table editing uses a plain text field for every editable column; suggest/combo cells
       (category, tax class) and validation of numeric input could reuse the product-page widgets.
+- [ ] Column filters are session-only; persisting them in `Settings` (per table, by key) would be a small
+      addition now that `DataTable` owns them. The value list always shows every value of the loaded
+      inventory (not narrowed by other filters).
+- [ ] Stock-take bulk edit was verified in the UI only; a live Submit with a bulk value (category/location/
+      supplier on scanned items, including an item whose quantity did not change) still needs a pass.
 - [ ] Only the inventory table is editable; Tickets/Invoices/Customers still open the record viewer on a
       single click (`onRowClicked`), which is intended but inconsistent with the inventory double-click.
 - [ ] Non-square `RDicon.png`; a 256×256 source would remove the blur at large icon sizes.
@@ -370,6 +390,23 @@ Things that cost time before. Add to this list whenever a task hits a non-obviou
 - **`raw.githubusercontent.com` caches ~5 min.** Append a `?t=<unix time>` cache-buster to the manifest GET; the
   installer download may still lag behind a fresh push, which is why `Updater::download` verifies `size` and
   `sha256` and tells the user to retry in a few minutes on mismatch.
+- **Tables inherit `NoSavedSettings` from their root window.** `TableFixFlags` ORs the flag in when
+  `outer_window->RootWindow` has it, and `TableLoadSettings` then returns immediately — `TableSettingsFindByID` /
+  `TableSettingsCreate` + `IsSettingsRequestLoad` look right but do nothing. Symptom: `table->SettingsOffset == -1`
+  and `SettingsLoadedFlags == 0` after `BeginTable`. When a "restored" layout silently shows defaults, log those
+  two fields first. `layout.ini` entries from older builds can make it look as if saving works.
+- **A table drawn before its columns are discovered truncates a key-based layout.** The inventory table is drawn
+  (0 rows) while the first load runs, so `captureLayout` saw only the preferred columns and overwrote the 59-column
+  layout; `captureLayout` now merges unknown saved columns back in at their saved position.
+- **Debugging a WIN32 app without a console.** `std::fopen("%TEMP%\\x.log", "a")` + `fprintf` from the draw code,
+  run the exe in the background, read the log; drive the UI with a tiny PowerShell script (`Cursor::Position` +
+  `mouse_event`, `SendKeys`) and `Graphics::CopyFromScreen` screenshots that the `open` tool can display. The
+  screenshot is shown scaled, so convert click coordinates back to screen pixels.
+- **Overlapping a header button on `TableHeader`.** `TableHeader` uses `ButtonBehavior(..., AllowOverlap)`, so an
+  `InvisibleButton` placed with `SetCursorScreenPos` inside the header cell takes the click (no sort toggle). Keep it
+  left of ImGui's sort arrow (`FontSize * 0.65 + FramePadding.x` wide at the right edge) or the two overlap.
+- **Popups opened inside `BeginTable`** (`OpenPopup`/`BeginPopup` both within the table scope) work fine; a popup
+  that closes "by itself" during a scripted test was a click landing outside it — check the coordinates first.
 
 ## 6. Prompt wishes
 
@@ -436,6 +473,15 @@ was ambiguous, record here what information would have helped.
 - (2026-10-09) "When an update is being sent through the api, show a progress bar" was ambiguous between the app
   update download and writes to RepairDesk; the user wanted both. Name the operation (download vs. save/submit)
   and, for multi-item operations, whether the bar should count items or requests.
+- (2026-10-17) For "the layout is not kept" reports, say what exactly reverts (widths, order, hidden/shown
+  columns, sort) and whether it happens on every start or only after an update — here everything reverted on
+  every start, which pointed at the restore path rather than the installer. For bulk-edit requests say whether
+  unchanged-quantity items should also be written when a bulk value is set (chosen: yes), where the option
+  lists come from (inventory values only vs. also RepairDesk's reference lists — both were used for
+  location/supplier) and whether the selections should reset after Submit (chosen: yes). For column filters
+  say whether they should persist across restarts (not persisted) and whether the value list should follow
+  the other active filters (Excel style) or always show every value (chosen: every value of the loaded
+  inventory).
 - (2026-10-09) "Update the version number" without a number: minor bump (1.3.0 → 1.4.0) was chosen for new
   features; say `1.3.1`/`2.0.0` if a patch/major is intended. For matching-rule changes say whether other
   scan boxes (POS) should follow the same rule — here the shared `findInventoryByCode` changed for both. For

@@ -6,13 +6,13 @@ downloaded automatically by CMake, and networking uses the built-in WinHTTP libr
 
 ## Installing (no build needed)
 
-A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.4.0-setup.exe`. It
+A ready-made installer ships with the repository: run `dist\RD_Desktop_Software-1.5.0-setup.exe`. It
 installs per user by default (no administrator prompt; "all users" can be chosen), adds a Start menu
 entry, an optional desktop shortcut (both with the RepairDesk icon, which the app also shows in the
 taskbar and title bar) and an uninstaller (Settings → Apps). The app needs no other software: the MinGW
 runtime (`libwinpthread-1.dll`) is included next to the exe. Uninstalling asks
 whether to also delete `%APPDATA%\RD Desktop Software` (your saved credentials). Silent install:
-`RD_Desktop_Software-1.4.0-setup.exe /VERYSILENT /CURRENTUSER`.
+`RD_Desktop_Software-1.5.0-setup.exe /VERYSILENT /CURRENTUSER`.
 
 ### Updating
 
@@ -27,7 +27,7 @@ at start-up can be switched off in the same card (`checkUpdatesOnStartup` in `se
 
 You can also download the new installer by hand and run it. Either way the existing installation
 (per-user or all-users) is updated in place with the same install mode and shortcut choices (the
-folder page is skipped and the summary page shows *Existing installation found: 1.3.0 → 1.4.0*), and
+folder page is skipped and the summary page shows *Existing installation found: 1.4.0 → 1.5.0*), and
 the Add/Remove Programs entry is replaced instead of a second one being added. Your preferences are
 kept: they live in `%APPDATA%\RD Desktop Software\settings.json`, which Setup never touches – accent
 colour, theme, font size, the column order/widths/visibility of every table, the API key / OAuth
@@ -38,7 +38,7 @@ credentials and tokens.
 The installer and the app are **not code-signed** (a certificate costs money), so Windows SmartScreen
 may show *Windows protected your PC* for a freshly downloaded setup – click **More info → Run anyway**.
 Both executables carry full version information, a manifest and a modern Inno Setup build; the
-`RD_Desktop_Software-1.4.0-setup.exe` in `dist\` scans clean with Microsoft Defender. If Defender
+`RD_Desktop_Software-1.5.0-setup.exe` in `dist\` scans clean with Microsoft Defender. If Defender
 still quarantines a build on your machine, report it as a false positive at
 <https://www.microsoft.com/wdsi/filesubmission> (the definitions are usually updated within a day),
 or build from source. To sign a release yourself, set `RD_SIGN_PFX` / `RD_SIGN_PASSWORD` before
@@ -75,17 +75,17 @@ The first configure downloads Dear ImGui and nlohmann/json, so an internet conne
 
 ## Rebuilding the installer / publishing an update
 
-The version number lives in `version.txt` (one line, e.g. `1.4.0`); CMake compiles it into the exe
+The version number lives in `version.txt` (one line, e.g. `1.5.0`); CMake compiles it into the exe
 (version resource, *Installed version* in Settings) and the installer reads it too. To publish a
-release: bump the version (`package.bat 1.5.0` writes it for you), double-click `package.bat`, then
+release: bump the version (`package.bat 1.6.0` writes it for you), double-click `package.bat`, then
 commit `dist\` with the source and push. The script runs `build.bat`, compiles
 `installer\RD_Desktop_Software.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) into
 `dist\RD_Desktop_Software-<version>-setup.exe` (the exe, `libwinpthread-1.dll`, `RDicon.ico` and this
 README), deletes older installers from `dist\` and writes `dist\update.json`:
 
 ```json
-{ "version": "1.4.0", "installer": "https://raw.githubusercontent.com/.../dist/RD_Desktop_Software-1.4.0-setup.exe",
-  "sha256": "...", "size": 3511208, "date": "2026-10-09" }
+{ "version": "1.5.0", "installer": "https://raw.githubusercontent.com/.../dist/RD_Desktop_Software-1.5.0-setup.exe",
+  "sha256": "...", "size": 3511208, "date": "2026-10-17" }
 ```
 
 Installed apps fetch that file from the `master` branch (raw.githubusercontent.com caches for a few
@@ -155,8 +155,15 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
   it right in the table; **Tab** / **Shift+Tab** move to the next / previous editable column of the same
   row (changed cells are shown in the accent colour until saved), **Enter**, tabbing past the last column
   or clicking anywhere else saves the whole row to RepairDesk in one request, **Esc** discards it.
-  **Double-click** a row to open the product page. Column order, widths and which columns are shown are
-  remembered per table across restarts and updates. While the inventory refreshes, a thin accent-coloured
+  **Double-click** a row to open the product page. Column order, widths, visibility and the sort column are
+  remembered per table (in `settings.json`, by field name) across restarts and app updates, so the layout
+  you left is the layout you get back. Every column header has a small **funnel icon** at its right edge:
+  click it to filter the table by the values of that column – a popup lists every distinct value found in
+  the loaded inventory with a checkbox each, a **Select all** checkbox at the top (tri-state; with text in
+  the search box it applies to the values shown), a search box for long lists, **Clear filter** and
+  **Done**. Filtered columns show the funnel in the accent colour, the status bar gains a *Clear N column
+  filters* button, and several column filters combine (a row must match all of them, plus the search box).
+  While the inventory refreshes, a thin accent-coloured
   progress bar runs along the top edge of the window: it fills from left to right as items arrive, reaching
   the right edge when as many items as the previous load (remembered between sessions) have been
   received; any additional items extend it as a dotted segment on the right, in proportion to the previous
@@ -186,7 +193,13 @@ RepairDesk's OAuth endpoints answer `HTTP 200` even on failure and wrap the resu
   count (accent colour); scanning the same barcode again adds 1, the +/− buttons adjust by 1, and
   **clicking the scanned count** lets you type the counted quantity directly (Enter or clicking away
   saves it, Esc cancels). Nothing is written
-  to RepairDesk until **Submit** is pressed. Submit sends the *change* (scanned − database quantity)
+  to RepairDesk until **Submit** is pressed. The **Bulk edit** toggle just left of **Submit** opens a
+  second panel to the left of the stock take with three drop-downs – **Category**, **Location** and
+  **Supplier** – each listing the values already used in your inventory (locations and suppliers also
+  include RepairDesk's own lists) with *No change* as the default (the × next to a chosen value puts it
+  back). When Submit is pressed with the toggle on, every scanned item also receives the chosen value(s)
+  in the same request as its quantity; fields left on *No change* are untouched, and items whose quantity
+  did not change are still updated when a bulk value is set. Submit sends the *change* (scanned − database quantity)
   as a stock adjustment, re-reads the item and, if RepairDesk reports a different quantity (it handles
   decreases differently from increases), sends the remaining difference again until the item is at
   exactly the scanned count; items whose change is 0 are not sent. After submitting, only the updated

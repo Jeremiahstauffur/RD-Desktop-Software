@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,6 +34,9 @@ struct ColumnSpec {
 //   commits every staged change of the row at once through `onRowEdited`,
 //   Escape discards them. A double click on a row fires `onRowDoubleClicked`,
 //   a single click on a non-editable cell fires `onRowClicked`.
+// * Optional per-column value filters: a funnel icon at the right edge of every
+//   header opens a checkbox list of the column's values (`filterValues` supplies
+//   them); the owner applies `passesFilters` when it builds its row list.
 class DataTable {
 public:
     explicit DataTable(std::string id);
@@ -51,6 +56,8 @@ public:
     using CellRenderer = std::function<bool(int row, const std::string& key, const std::string& value)>;
     // Staged edits of one row: (key, new value) in the order they were made.
     using RowEdits = std::vector<std::pair<std::string, std::string>>;
+    // Appends every value of column `key` across the *unfiltered* data (duplicates allowed).
+    using FilterValues = std::function<void(const std::string& key, std::vector<std::string>& values)>;
 
     struct DrawOptions {
         bool selectable = false;                 // show checkbox column
@@ -62,6 +69,7 @@ public:
         // starts editing; `onRowEdited` receives all changed cells of the row on commit.
         std::function<bool(int row, const std::string& key)> isEditable;
         std::function<void(int row, const RowEdits& edits)> onRowEdited;
+        FilterValues filterValues;               // enables the header filter icons
         float rowHeight = 38.0f;
         ImVec2 size = ImVec2(0, 0);              // 0 = fill remaining
     };
@@ -79,6 +87,13 @@ public:
     bool isEditing() const { return editRow_ >= 0; }
     // Drops the current cell edit and every staged change of the row.
     void cancelEdit();
+
+    // Column value filters (the owner re-filters its rows when `filterDirty` is set).
+    bool filterDirty = false;
+    bool hasFilters() const { return !filters_.empty(); }
+    int filterCount() const { return (int)filters_.size(); }
+    bool passesFilters(const FlatRecord& rec) const;
+    void clearFilters();
 
 private:
     // Editing state --------------------------------------------------------
@@ -102,6 +117,16 @@ private:
     bool layoutPending_ = true;          // saved layout must be (re)applied before the next BeginTable
     std::vector<std::string> appliedKeys_;   // column keys the layout was last applied for
     TableLayout lastLayout_;             // last layout captured from the live table
+
+    // Column filters -------------------------------------------------------
+    void drawFilterPopup();
+    void setFilterValue(const std::string& key, const std::string& value, bool on);
+    std::map<std::string, std::set<std::string>> filters_;   // column key -> values kept (absent = no filter)
+    std::string filterKey_;              // column whose filter popup is open
+    std::string filterLabel_;
+    std::vector<std::string> filterOptions_;   // distinct values offered in the popup
+    std::string filterSearch_;
+    ImVec2 filterPopupPos_;
 
     std::string id_;
     std::vector<ColumnSpec> columns_;

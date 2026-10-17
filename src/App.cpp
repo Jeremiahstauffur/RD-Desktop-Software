@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <set>
 
 #include <dwmapi.h>
 #include <imgui.h>
@@ -577,6 +578,20 @@ std::vector<int> App::searchInventory(const std::string& text, size_t limit) con
     return out;
 }
 
+std::vector<std::string> App::inventoryValues(const std::string& key) const {
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    for (const InventoryItem& it : inventory) {
+        auto f = it.fields.find(key);
+        if (f == it.fields.end()) continue;
+        const std::string value = trim(f->second);
+        if (value.empty()) continue;
+        if (seen.insert(lowercase(value)).second) out.push_back(value);
+    }
+    std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) { return lowercase(a) < lowercase(b); });
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Toasts
 // ---------------------------------------------------------------------------
@@ -639,9 +654,11 @@ void App::frame() {
     ImGui::SetNextWindowSize(vp->WorkSize);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    // No NoSavedSettings here: tables inherit that flag from their root window and would
+    // then ignore the column layouts DataTable restores through ImGui's table settings.
     ImGui::Begin("##root", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus |
                      ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar(2);
 

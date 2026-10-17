@@ -4,6 +4,7 @@
 #include <cctype>
 #include <climits>
 #include <cmath>
+#include <cstdio>
 #include <numeric>
 #include <unordered_set>
 
@@ -243,12 +244,142 @@ void DataTable::captureLayout(int firstDataCol) {
         layout.columns.push_back(std::move(col));
     }
 
+    // Columns the table does not know right now keep their saved place. At start-up the
+    // table is drawn with the preferred columns only; the ones discovered from the data
+    // arrive with the first load and must not lose their saved width/visibility/order.
+    if (settings_) {
+        auto it = settings_->tableLayouts.find(id_);
+        if (it != settings_->tableLayouts.end()) {
+            size_t insertPos = 0;   // after the last saved column that is also live
+            for (const TableLayout::Column& saved : it->second.columns) {
+                size_t live = 0;
+                while (live < layout.columns.size() && layout.columns[live].key != saved.key) ++live;
+                if (live < layout.columns.size()) {
+                    insertPos = live + 1;
+                } else {
+                    layout.columns.insert(layout.columns.begin() + insertPos, saved);
+                    insertPos++;
+                }
+            }
+        }
+    }
+
     if (sameLayout(layout, lastLayout_)) return;
     lastLayout_ = layout;
     if (settings_) {
         settings_->tableLayouts[id_] = std::move(layout);
         settings_->layoutDirty = true;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Column value filters
+// ---------------------------------------------------------------------------
+
+bool DataTable::passesFilters(const FlatRecord& rec) const {
+    static const std::string empty;
+    for (const auto& [key, allowed] : filters_) {
+        auto it = rec.find(key);
+        const std::string& value = it == rec.end() ? empty : it->second;
+        if (!allowed.count(value)) return false;
+    }
+    return true;
+}
+
+void DataTable::clearFilters() {
+    if (filters_.empty()) return;
+    filters_.clear();
+    filterDirty = true;
+}
+
+// Ticks or unticks one value of a column. A column without an entry in `filters_` shows
+// everything, so the first change starts from "all values selected"; selecting every
+// value again removes the filter.
+void DataTable::setFilterValue(const std::string& key, const std::string& value, bool on) {
+    auto it = filters_.find(key);
+    if (it == filters_.end()) {
+        if (on) return;
+        it = filters_.emplace(key, std::set<std::string>(filterOptions_.begin(), filterOptions_.end())).first;
+    }
+    if (on) it->second.insert(value);
+    else it->second.erase(value);
+    bool all = true;
+    for (const std::string& o : filterOptions_) {
+        if (!it->second.count(o)) { all = false; break; }
+    }
+    if (all) filters_.erase(it);
+    filterDirty = true;
+}
+
+void DataTable::drawFilterPopup() {
+    const Palette& P = Theme::get().palette();
+    ImGui::SetNextWindowPos(filterPopupPos_, ImGuiCond_Appearing);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 12));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, P.surface);
+    if (ImGui::BeginPopup("##filterPopup")) {
+        const std::string key = filterKey_;
+        ui::BoldText(filterLabel_.c_str());
+        ui::SecondaryText("Show only the ticked values");
+        ImGui::Spacing();
+        ui::TextField("##filterSearch", filterSearch_, "Search values", 260.0f);
+        ImGui::Spacing();
+
+        // Values matching the search box (all of them when it is empty).
+        std::string needle = filterSearch_;
+        std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        std::vector<const std::string*> shown;
+        shown.reserve(filterOptions_.size());
+        for (const std::string& o : filterOptions_) {
+            if (needle.empty()) { shown.push_back(&o); continue; }
+            std::string lo = o;
+            std::transform(lo.begin(), lo.end(), lo.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            if (lo.find(needle) != std::string::npos) shown.push_back(&o);
+        }
+        auto filterIt = filters_.find(key);
+        auto isOn = [&](const std::string& v) { return filterIt == filters_.end() || filterIt->second.count(v) > 0; };
+        int onCount = 0;
+        for (const std::string* v : shown) if (isOn(*v)) onCount++;
+
+        const int state = shown.empty() || onCount == 0 ? 0 : (onCount == (int)shown.size() ? 1 : 2);
+        if (ui::TriStateCheckbox("##selectAllValues", state)) {
+            const bool turnOn = state != 1;
+            for (const std::string* v : shown) setFilterValue(key, *v, turnOn);
+        }
+        ImGui::SameLine();
+        ui::BoldText(needle.empty() ? "Select all" : "Select all shown");
+        ImGui::Separator();
+        const float listH = std::min(360.0f, 30.0f * std::max<size_t>(shown.size(), 1) + 8.0f);
+        ImGui::BeginChild("##filterValues", ImVec2(260, listH), ImGuiChildFlags_None);
+        if (shown.empty()) ui::SecondaryText(filterOptions_.empty() ? "No values" : "No values match the search");
+        for (size_t i = 0; i < shown.size(); ++i) {
+            const std::string& v = *shown[i];
+            bool on = isOn(v);
+            ImGui::PushID((int)i);
+            if (ui::Checkbox(v.empty() ? "(blank)" : v.c_str(), &on)) setFilterValue(key, v, on);
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        ImGui::Spacing();
+
+        filterIt = filters_.find(key);
+        char info[64];
+        if (filterIt == filters_.end()) std::snprintf(info, sizeof(info), "All %zu values shown", filterOptions_.size());
+        else std::snprintf(info, sizeof(info), "%zu of %zu values selected", filterIt->second.size(), filterOptions_.size());
+        ui::SecondaryText(info);
+        ImGui::BeginDisabled(filterIt == filters_.end());
+        if (ui::SubtleButton("Clear filter")) {
+            filters_.erase(key);
+            filterDirty = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ui::SubtleButton("Done")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    } else {
+        filterKey_.clear();
+    }
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +546,9 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
             std::fill(options.selection->begin(), options.selection->end(), newValue);
         }
     }
+    ImGuiTable* table = ImGui::GetCurrentTable();
+    int openFilterCol = -1;
+    const bool filterable = (bool)options.filterValues;
     ImGui::PushFont(F.bodyBold);
     ImGui::PushStyleColor(ImGuiCol_Text, P.accent);
     for (int i = 0; i < dataColumns; ++i) {
@@ -422,6 +556,31 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (options.rowHeight - ImGui::GetTextLineHeight()) * 0.5f - 1.0f);
         ImGui::PushID(i);
         ImGui::TableHeader(columns_[i].label.c_str());
+        if (filterable) {
+            // Funnel at the right edge of the header (left of ImGui's sort arrow). TableHeader
+            // uses AllowOverlap, so the button takes the click instead of the sort toggle.
+            const ImRect cell = ImGui::TableGetCellBgRect(table, firstDataCol + i);
+            const float iconW = ImGui::GetFrameHeight();
+            const float arrowW = ImTrunc(ImGui::GetFontSize() * 0.65f + ImGui::GetStyle().FramePadding.x);
+            const ImVec2 pos(cell.Max.x - arrowW - iconW, cell.Min.y + (options.rowHeight - iconW) * 0.5f);
+            if (pos.x > cell.Min.x + iconW) {
+                const bool active = filters_.count(columns_[i].key) > 0;
+                ImGui::SetCursorScreenPos(pos);
+                if (ImGui::InvisibleButton("filter", ImVec2(iconW, iconW))) {
+                    openFilterCol = i;
+                    filterPopupPos_ = ImVec2(pos.x, cell.Max.y);
+                }
+                const bool hovered = ImGui::IsItemHovered();
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                if (hovered) dl->AddRectFilled(pos, ImVec2(pos.x + iconW, pos.y + iconW), Theme::u32(Theme::withAlpha(P.text, 0.08f)), 4.0f);
+                ImGui::PushFont(F.body);
+                const ImVec2 glyph = ImGui::CalcTextSize(icons::Filter);
+                const ImVec4 col = active ? P.accent : Theme::withAlpha(P.textSecondary, hovered ? 1.0f : 0.6f);
+                dl->AddText(ImVec2(pos.x + (iconW - glyph.x) * 0.5f, pos.y + (iconW - glyph.y) * 0.5f), Theme::u32(col), icons::Filter);
+                ImGui::PopFont();
+                if (hovered) ui::Tooltip(active ? "Filtered - click to change" : "Filter by value");
+            }
+        }
         ImGui::PopID();
     }
     ImGui::PopStyleColor();
@@ -440,7 +599,6 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
     }
 
     // Body ----------------------------------------------------------------
-    ImGuiTable* table = ImGui::GetCurrentTable();
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     // Clicks are detected geometrically (the row selectable, the cells and an active
     // text field all compete for the hover otherwise). Allowed while a cell editor is
@@ -666,6 +824,31 @@ void DataTable::draw(int rowCount, const std::function<const FlatRecord&(int)>& 
         if (pendingToggles_[i] == 1) ImGui::TableSetColumnEnabled(firstDataCol + i, true);
         else if (pendingToggles_[i] == 2) ImGui::TableSetColumnEnabled(firstDataCol + i, false);
     }
+
+    // Column filter popup --------------------------------------------------
+    if (openFilterCol >= 0) {
+        filterKey_ = columns_[openFilterCol].key;
+        filterLabel_ = columns_[openFilterCol].label;
+        filterSearch_.clear();
+        std::vector<std::string> values;
+        options.filterValues(filterKey_, values);
+        std::sort(values.begin(), values.end(), [](const std::string& a, const std::string& b) {
+            return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), [](unsigned char x, unsigned char y) {
+                return std::tolower(x) < std::tolower(y);
+            });
+        });
+        values.erase(std::unique(values.begin(), values.end()), values.end());
+        // Values of an active filter that no longer occur stay listed so they can be unticked.
+        auto it = filters_.find(filterKey_);
+        if (it != filters_.end()) {
+            for (const std::string& v : it->second) {
+                if (std::find(values.begin(), values.end(), v) == values.end()) values.push_back(v);
+            }
+        }
+        filterOptions_ = std::move(values);
+        ImGui::OpenPopup("##filterPopup");
+    }
+    if (filterable) drawFilterPopup();
 
     captureLayout(firstDataCol);
 

@@ -84,6 +84,9 @@ public:
     // Indices of items where every space-separated term of `text` occurs in some field
     // (same rule as the inventory table search). At most `limit` results (0 = all).
     std::vector<int> searchInventory(const std::string& text, size_t limit = 0) const;
+    // Distinct non-empty text values of a flattened field across the loaded inventory,
+    // sorted case-insensitively (e.g. every category in use).
+    std::vector<std::string> inventoryValues(const std::string& key) const;
 
     // Reference data (manufacturers, devices, suppliers, tax classes, conditions,
     // physical locations). Loaded with the first inventory refresh; shared with
@@ -114,6 +117,7 @@ public:
     // Navigation ----------------------------------------------------------
     Page page = Page::Inventory;
     bool stockTakeOpen = false;
+    bool stockTakeBulkEdit = false;     // bulk-edit panel next to the stock take sidebar
 
     // Global search (bottom bar). Typing switches to the Search page.
     std::string globalSearch;

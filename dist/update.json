@@ -1,7 +1,7 @@
 {
-    "version":  "1.4.0",
-    "installer":  "https://raw.githubusercontent.com/Jeremiahstauffur/RD-Desktop-Software/master/dist/RD_Desktop_Software-1.4.0-setup.exe",
-    "sha256":  "1cb54421fe50fb464ed15145cde43e8e466c03809f7229adc22062b518d7ddbb",
-    "size":  3514473,
-    "date":  "2026-10-09"
+    "version":  "1.5.0",
+    "installer":  "https://raw.githubusercontent.com/Jeremiahstauffur/RD-Desktop-Software/master/dist/RD_Desktop_Software-1.5.0-setup.exe",
+    "sha256":  "82fa072bda18af5c81023c485fc9bebc5e7a0c900560ac5689313bef8bc63295",
+    "size":  3521073,
+    "date":  "2026-10-17"
 }

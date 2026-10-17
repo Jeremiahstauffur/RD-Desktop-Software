@@ -9,6 +9,7 @@ namespace pages {
 
 void inventory(App& app);
 void stockTake(App& app);          // right-hand sidebar; drawn by the inventory page
+float stockTakeWidth(const App& app);   // total width of the sidebar (+ bulk-edit panel when open)
 void pos(App& app);
 void tickets(App& app);
 void invoices(App& app);

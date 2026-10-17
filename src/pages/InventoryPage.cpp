@@ -188,8 +188,10 @@ void rebuildView(App& app) {
     InventoryState& s = S();
     s.view.clear();
     const std::vector<std::string> terms = searchTerms(s.search);
+    const bool filtered = s.table.hasFilters();
     for (size_t i = 0; i < app.inventory.size(); ++i) {
         if (!terms.empty() && !itemMatchesTerms(app.inventory[i], terms)) continue;
+        if (filtered && !s.table.passesFilters(app.inventory[i].fields)) continue;
         s.view.push_back((int)i);
     }
 
@@ -964,6 +966,10 @@ void inventory(App& app) {
         s.table.sortDirty = false;
         s.viewDirty = true;
     }
+    if (s.table.filterDirty) {
+        s.table.filterDirty = false;
+        s.viewDirty = true;
+    }
     if (s.viewDirty) rebuildView(app);
 
     // Product page requested from elsewhere (e.g. global search)
@@ -991,7 +997,7 @@ void inventory(App& app) {
         }
     }
 
-    const float sidebarWidth = app.stockTakeOpen ? 380.0f * dpi : 0.0f;
+    const float sidebarWidth = app.stockTakeOpen ? pages::stockTakeWidth(app) : 0.0f;
     const float gap = app.stockTakeOpen ? 16.0f * dpi : 0.0f;
     ImVec2 avail = ImGui::GetContentRegionAvail();
 
@@ -1145,6 +1151,14 @@ void inventory(App& app) {
                 s.openProductId = it.id;
                 loadEditor(app, s, it);
             };
+            // Header funnel icons: the values offered are those of the whole loaded inventory.
+            opts.filterValues = [&](const std::string& key, std::vector<std::string>& values) {
+                values.reserve(app.inventory.size());
+                for (const InventoryItem& it : app.inventory) {
+                    auto f = it.fields.find(key);
+                    values.push_back(f == it.fields.end() ? std::string() : f->second);
+                }
+            };
             s.table.draw((int)s.view.size(), [&](int row) -> const FlatRecord& { return app.inventory[s.view[row]].fields; }, opts);
 
             for (size_t i = 0; i < s.view.size(); ++i) {
@@ -1160,6 +1174,16 @@ void inventory(App& app) {
         std::snprintf(status, sizeof(status), "%zu of %zu items shown  |  %zu selected", s.view.size(),
                       app.inventory.size(), s.selectedIds.size());
         ui::SecondaryText(status);
+        if (s.table.hasFilters()) {
+            // Column filters set with the funnel icons in the headers.
+            ImGui::SameLine();
+            char clearLabel[64];
+            std::snprintf(clearLabel, sizeof(clearLabel), "%s  Clear %d column filter%s", icons::Filter, s.table.filterCount(),
+                          s.table.filterCount() == 1 ? "" : "s");
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - (ImGui::GetFrameHeight() - ImGui::GetTextLineHeight()) * 0.5f);
+            if (ui::SubtleButton(clearLabel)) s.table.clearFilters();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ui::Tooltip("Removes the value filters set with the funnel icons in the column headers");
+        }
         if (!app.inventoryStatus.empty()) {
             ImGui::SameLine();
             ui::AlignRight(ImGui::CalcTextSize(app.inventoryStatus.c_str()).x);

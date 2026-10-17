@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -30,6 +31,32 @@ struct ScanEntry {
 
 constexpr double kSuggestDelay = 1.0;   // seconds without typing before the product list appears
 constexpr size_t kSuggestLimit = 25;
+constexpr float kPanelWidth = 380.0f;      // stock take sidebar (logical px)
+constexpr float kBulkPanelWidth = 300.0f;  // bulk-edit panel to its left
+constexpr float kPanelGap = 16.0f;
+
+// Bulk edit of the scanned items: one drop-down per field, -1 = leave the field alone.
+struct BulkEdit {
+    int category = -1;
+    int location = -1;
+    int supplier = -1;
+    std::vector<std::string> categories, locations, suppliers;   // values in use in the inventory
+    size_t inventorySize = (size_t)-1;
+    unsigned inventoryRevision = 0;
+    const void* lookups = nullptr;
+
+    bool any() const { return category >= 0 || location >= 0 || supplier >= 0; }
+    int count() const { return (category >= 0) + (location >= 0) + (supplier >= 0); }
+    void reset() { category = location = supplier = -1; }
+    // Fields sent with every scanned item (names; the API layer resolves ids).
+    json overrides() const {
+        json o = json::object();
+        if (category >= 0 && category < (int)categories.size()) o["item_type"] = categories[category];
+        if (location >= 0 && location < (int)locations.size()) o["physical_location"] = locations[location];
+        if (supplier >= 0 && supplier < (int)suppliers.size()) o["supplier"] = suppliers[supplier];
+        return o;
+    }
+};
 
 struct StockTakeState {
     std::string input;
@@ -46,6 +73,7 @@ struct StockTakeState {
     long long editingId = 0;        // entry whose scanned count is being typed
     std::string editText;
     bool focusEdit = false;
+    BulkEdit bulk;
 };
 
 StockTakeState& S() {
@@ -57,6 +85,54 @@ void clearSuggestions(StockTakeState& s) {
     s.suggestions.clear();
     s.suggestReady = false;
     s.typedAt = 0.0;
+}
+
+std::string lowerAscii(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    return s;
+}
+
+// Adds `extra` names that are not already in `values` (case-insensitive) and re-sorts.
+void mergeValues(std::vector<std::string>& values, const std::vector<std::string>& extra) {
+    for (const std::string& e : extra) {
+        if (e.empty()) continue;
+        bool known = false;
+        for (const std::string& v : values) {
+            if (lowerAscii(v) == lowerAscii(e)) { known = true; break; }
+        }
+        if (!known) values.push_back(e);
+    }
+    std::sort(values.begin(), values.end(), [](const std::string& a, const std::string& b) { return lowerAscii(a) < lowerAscii(b); });
+}
+
+// Keeps the bulk-edit drop-down lists in step with the inventory and the reference data.
+// A selection is kept by name across rebuilds so that a refresh does not drop it.
+void updateBulkLists(App& app, BulkEdit& b) {
+    const Lookups& L = *app.lookups;
+    if (b.inventorySize == app.inventory.size() && b.inventoryRevision == app.inventoryRevision && b.lookups == &L) return;
+    b.inventorySize = app.inventory.size();
+    b.inventoryRevision = app.inventoryRevision;
+    b.lookups = &L;
+
+    auto keep = [](const std::vector<std::string>& list, int idx) { return idx >= 0 && idx < (int)list.size() ? list[idx] : std::string(); };
+    auto restore = [](const std::vector<std::string>& list, const std::string& name) {
+        if (name.empty()) return -1;
+        for (size_t i = 0; i < list.size(); ++i) if (lowerAscii(list[i]) == lowerAscii(name)) return (int)i;
+        return -1;
+    };
+    const std::string cat = keep(b.categories, b.category), loc = keep(b.locations, b.location), sup = keep(b.suppliers, b.supplier);
+
+    b.categories = app.inventoryValues("item_type");
+    b.locations = app.inventoryValues("physical_location");
+    mergeValues(b.locations, L.locations);
+    b.suppliers = app.inventoryValues("supplier");
+    std::vector<std::string> supplierNames;
+    for (const NamedId& v : L.suppliers) supplierNames.push_back(v.name);
+    mergeValues(b.suppliers, supplierNames);
+
+    b.category = restore(b.categories, cat);
+    b.location = restore(b.locations, loc);
+    b.supplier = restore(b.suppliers, sup);
 }
 
 // Adds one scan of `item` to the list (or bumps its count) and moves it to the top.
@@ -219,6 +295,9 @@ void applyToRepairDesk(App& app) {
     StockTakeState& s = S();
     if (s.entries.empty() || s.applying) return;
     s.applying = true;
+    // Bulk edit (category / location / supplier) applies to every scanned item on Submit.
+    const json overrides = app.stockTakeBulkEdit ? s.bulk.overrides() : json::object();
+    const bool bulkEdit = !overrides.empty();
 
     std::vector<TargetEntry> targets;
     targets.reserve(s.entries.size());
@@ -254,13 +333,15 @@ void applyToRepairDesk(App& app) {
         std::vector<InventoryItem> refreshed;                     // items re-read from the server after the update
         std::vector<InventoryItem> refreshedFailed;               // re-read items that did not reach the scanned quantity
         std::vector<std::pair<long long, int>> updatedQuantities; // fallback when the re-read failed
+        std::vector<std::string> notes;                           // distinct write notes (dropped values...)
+        bool createdReferences = false;
     };
     auto job = app.beginWriteJob(targets.size());
     Async::run(
-        [client, targets, job] {
+        [client, targets, job, overrides, bulkEdit] {
             Outcome out;
             for (const TargetEntry& t : targets) {
-                if (t.change == 0) {
+                if (t.change == 0 && !bulkEdit) {
                     // Already at the counted quantity; nothing to send.
                     out.ok++;
                     out.updatedQuantities.push_back({t.item.id, t.scanned});
@@ -269,7 +350,14 @@ void applyToRepairDesk(App& app) {
                 }
                 // PUT /inventory/{id} treats `in_stock` as an adjustment; saveInventoryItem
                 // lands the stock on the scanned quantity and re-reads the item to verify.
-                ApiResult<InventoryItem> r = client.saveInventoryItem(t.item.id, t.item.toUpdatePayload(), t.item.inStock, t.scanned);
+                // The bulk-edit fields ride along in the same request.
+                WriteNotes notes;
+                ApiResult<InventoryItem> r = client.saveInventoryItem(t.item.id, t.item.toUpdatePayload(overrides), t.item.inStock,
+                                                                       t.scanned, &notes);
+                for (const std::string& m : notes.messages) {
+                    if (std::find(out.notes.begin(), out.notes.end(), m) == out.notes.end()) out.notes.push_back(m);
+                }
+                if (notes.createdReferences) out.createdReferences = true;
                 if (r.ok && r.value.id == 0) {
                     out.ok++;   // written but could not be re-read; assume the server applied it
                     out.updatedQuantities.push_back({t.item.id, t.scanned});
@@ -285,10 +373,12 @@ void applyToRepairDesk(App& app) {
             }
             return out;
         },
-        [&app, job](Outcome out) {
+        [&app, job, bulkEdit](Outcome out) {
             StockTakeState& st = S();
             st.applying = false;
             app.finishWriteJob(job);
+            for (const std::string& m : out.notes) app.notify(m, ui::InfoKind::Warning);
+            if (out.createdReferences) app.refreshLookups();
             // Updated items leave the panel so that a re-submit only retries the failed ones.
             auto removeEntry = [&](long long id) {
                 for (size_t i = 0; i < st.entries.size(); ++i) {
@@ -324,9 +414,11 @@ void applyToRepairDesk(App& app) {
             }
             char buf[256];
             if (out.failed == 0) {
-                std::snprintf(buf, sizeof(buf), "Stock take submitted: %d item(s) updated.", out.ok);
+                std::snprintf(buf, sizeof(buf), "Stock take submitted: %d item(s) updated%s.", out.ok,
+                              bulkEdit ? " (quantities and bulk-edit fields)" : "");
                 app.notify(buf, ui::InfoKind::Success);
                 st.entries.clear();
+                st.bulk.reset();   // the chosen values were applied; start the next count clean
             } else {
                 std::snprintf(buf, sizeof(buf), "Stock take: %d updated, %d failed. %s", out.ok, out.failed,
                               out.firstError.c_str());
@@ -335,9 +427,91 @@ void applyToRepairDesk(App& app) {
         });
 }
 
+// Panel to the left of the stock take: three drop-downs whose values are written to every
+// scanned item together with the quantities when Submit is pressed.
+void drawBulkPanel(App& app) {
+    StockTakeState& s = S();
+    BulkEdit& b = s.bulk;
+    const Palette& P = Theme::get().palette();
+    const float dpi = app.dpiScale;
+    updateBulkLists(app, b);
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, P.surface);
+    ImGui::PushStyleColor(ImGuiCol_Border, P.border);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f * dpi);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16 * dpi, 16 * dpi));
+    ImGui::BeginChild("##stockBulk", ImVec2(kBulkPanelWidth * dpi, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+
+    ui::Subtitle("Bulk edit");
+    ImGui::SameLine();
+    ui::AlignRight(ImGui::GetFrameHeight());
+    if (ui::IconButton("closeBulk", icons::Close, "Close bulk edit")) app.stockTakeBulkEdit = false;
+    ImGui::PushTextWrapPos(0.0f);
+    ui::SecondaryText("Applied to every scanned item when you press Submit. Fields left on \"No change\" keep their current value.");
+    ImGui::PopTextWrapPos();
+    ui::VerticalSpace(8 * dpi);
+
+    // One drop-down per field; the x next to a chosen value puts it back to "No change".
+    auto field = [&](const char* label, const char* id, int& index, const std::vector<std::string>& options, const char* fieldKey) {
+        ImGui::PushID(id);
+        ui::Label(label);
+        const float clearW = index >= 0 ? ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x : 0.0f;
+        const float w = ImGui::GetContentRegionAvail().x - clearW;
+        if (options.empty()) {
+            ImGui::BeginDisabled();
+            int none = -1;
+            ui::ComboField("##combo", none, options, app.inventory.empty() ? "Inventory not loaded" : "No values in the inventory", w);
+            ImGui::EndDisabled();
+        } else {
+            ui::ComboField("##combo", index, options, "No change", w);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && index < 0) {
+                char tip[128];
+                std::snprintf(tip, sizeof(tip), "Every %s value already used in your inventory", fieldKey);
+                ui::Tooltip(tip);
+            }
+        }
+        if (index >= 0) {
+            ImGui::SameLine();
+            if (ui::IconButton("clear", icons::Close, "No change")) index = -1;
+        }
+        ui::VerticalSpace(6 * dpi);
+        ImGui::PopID();
+    };
+    field("Category", "cat", b.category, b.categories, "category");
+    field("Location", "loc", b.location, b.locations, "location");
+    field("Supplier", "sup", b.supplier, b.suppliers, "supplier");
+
+    ui::Divider();
+    ui::VerticalSpace(4 * dpi);
+    char summary[160];
+    ImGui::PushTextWrapPos(0.0f);
+    if (!b.any()) {
+        ui::SecondaryText("Nothing selected: Submit only updates the quantities.");
+    } else {
+        std::snprintf(summary, sizeof(summary), "%d field%s will be set on %zu scanned item%s when you press Submit.", b.count(),
+                      b.count() == 1 ? "" : "s", s.entries.size(), s.entries.size() == 1 ? "" : "s");
+        ImGui::TextColored(P.accent, "%s", summary);
+    }
+    ImGui::PopTextWrapPos();
+    if (b.any()) {
+        ui::VerticalSpace(4 * dpi);
+        if (ui::SubtleButton("Reset all to No change")) b.reset();
+    }
+
+    ImGui::EndChild();
+}
+
 } // namespace
 
 namespace pages {
+
+float stockTakeWidth(const App& app) {
+    const float dpi = app.dpiScale;
+    return kPanelWidth * dpi + (app.stockTakeBulkEdit ? (kBulkPanelWidth + kPanelGap) * dpi : 0.0f);
+}
 
 void stockTake(App& app) {
     StockTakeState& s = S();
@@ -345,11 +519,16 @@ void stockTake(App& app) {
     const Fonts& F = Theme::get().fonts();
     const float dpi = app.dpiScale;
 
+    if (app.stockTakeBulkEdit) {
+        drawBulkPanel(app);
+        ImGui::SameLine(0, kPanelGap * dpi);
+    }
+
     ImGui::PushStyleColor(ImGuiCol_ChildBg, P.surface);
     ImGui::PushStyleColor(ImGuiCol_Border, P.border);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f * dpi);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16 * dpi, 16 * dpi));
-    ImGui::BeginChild("##stockTake", ImVec2(380 * dpi, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+    ImGui::BeginChild("##stockTake", ImVec2(kPanelWidth * dpi, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(2);
@@ -522,10 +701,23 @@ void stockTake(App& app) {
     ui::VerticalSpace(4 * dpi);
     ImGui::BeginDisabled(s.entries.empty() || s.applying);
     if (ui::Button("Clear")) s.entries.clear();
+    ImGui::EndDisabled();
     ImGui::SameLine();
     std::string applyLabel = std::string(icons::Save) + "  Submit";
-    float applyW = ImGui::CalcTextSize(applyLabel.c_str()).x + ImGui::GetStyle().FramePadding.x * 2;
-    ui::AlignRight(applyW + (s.applying ? 28 * dpi : 0));
+    const float applyW = ImGui::CalcTextSize(applyLabel.c_str()).x + ImGui::GetStyle().FramePadding.x * 2;
+    const char* toggleLabel = "Bulk edit";
+    const float toggleW = ImGui::GetFrameHeight() * 0.8f * 2.0f + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(toggleLabel).x;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    ui::AlignRight(toggleW + spacing * 2 + applyW + (s.applying ? 28 * dpi : 0));
+    // Toggle just left of Submit: opens the bulk-edit panel for the scanned items.
+    ImGui::BeginDisabled(s.applying);
+    ui::ToggleSwitch(toggleLabel, &app.stockTakeBulkEdit);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ui::Tooltip("Also set the category, location and/or supplier of every scanned item when submitting");
+    }
+    ImGui::SameLine(0, spacing * 2);
+    ImGui::BeginDisabled(s.entries.empty() || s.applying);
     if (s.applying) {
         ui::Spinner("##applySpin");
         ImGui::SameLine();
@@ -533,7 +725,9 @@ void stockTake(App& app) {
     if (ui::AccentButton(applyLabel.c_str())) applyToRepairDesk(app);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !s.entries.empty()) {
-        ui::Tooltip("Submits the stock take: adjusts each item's in-stock quantity in RepairDesk by the change shown, so it ends up at the scanned quantity");
+        const bool bulk = app.stockTakeBulkEdit && s.bulk.any();
+        ui::Tooltip(bulk ? "Submits the stock take: adjusts each item's in-stock quantity to the scanned quantity and sets the bulk-edit fields on every scanned item"
+                         : "Submits the stock take: adjusts each item's in-stock quantity in RepairDesk by the change shown, so it ends up at the scanned quantity");
     }
 
     ImGui::EndChild();
